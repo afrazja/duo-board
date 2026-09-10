@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { AssistantStatus, Audience, Message, ThreadSummary } from "@/lib/board";
 import { ListenButton, useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 
@@ -23,6 +25,16 @@ function ago(iso: string | null | undefined, now: number): string {
 
 function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// A duration in words: "48 s", "4 min 12 s", "1 h 05 min".
+function spell(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return r ? `${m} min ${r} s` : `${m} min`;
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
 }
 
 // Dictation uses the browser's own speech recognition (Chrome, Edge, Safari).
@@ -157,24 +169,47 @@ function useDictation(onFinal: (text: string) => void) {
   return { supported, listening, interim, problem, lang, setLang: writeLang, toggle: () => (listening ? stop() : start()) };
 }
 
-// Text with ``` fences rendered as code, everything else kept as written.
+// Messages are Markdown (the assistants are told to write it), rendered with
+// GitHub-flavoured tables and lists. Headings are stepped down so a reply's
+// "# Title" never outranks the page. Paragraphs keep single newlines, so a
+// dictated message with line breaks still reads the way it was typed.
+const MD: Components = {
+  h1: ({ children }) => <h3 className="mb-1 mt-3 text-[17px] font-semibold text-zinc-50">{children}</h3>,
+  h2: ({ children }) => <h3 className="mb-1 mt-3 text-[16px] font-semibold text-zinc-50">{children}</h3>,
+  h3: ({ children }) => <h4 className="mb-1 mt-2 text-[15.5px] font-semibold text-zinc-100">{children}</h4>,
+  h4: ({ children }) => <h5 className="mb-1 mt-2 text-[15px] font-semibold text-zinc-100">{children}</h5>,
+  p: ({ children }) => <p className="whitespace-pre-wrap text-[15.5px] leading-7 text-zinc-100">{children}</p>,
+  ul: ({ children }) => <ul className="list-disc space-y-1 pl-5 text-[15.5px] leading-7 text-zinc-100">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal space-y-1 pl-5 text-[15.5px] leading-7 text-zinc-100">{children}</ol>,
+  li: ({ children }) => <li className="pl-1">{children}</li>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="text-indigo-300 underline underline-offset-2 hover:text-indigo-200">
+      {children}
+    </a>
+  ),
+  strong: ({ children }) => <strong className="font-semibold text-zinc-50">{children}</strong>,
+  blockquote: ({ children }) => <blockquote className="border-l-2 border-zinc-700 pl-3 text-zinc-300">{children}</blockquote>,
+  hr: () => <hr className="my-3 border-zinc-800" />,
+  pre: ({ children }) => (
+    <pre className="overflow-x-auto rounded-md bg-black/40 p-3 text-[13.5px] leading-6 [&_code]:bg-transparent [&_code]:p-0">{children}</pre>
+  ),
+  code: ({ children }) => <code className="rounded bg-black/40 px-1 py-0.5 text-[13.5px]">{children}</code>,
+  table: ({ children }) => (
+    <div className="overflow-x-auto">
+      <table className="my-2 w-full border-collapse text-[14px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => <th className="border-b border-zinc-700 px-2 py-1.5 text-left font-semibold text-zinc-200">{children}</th>,
+  td: ({ children }) => <td className="border-b border-zinc-800 px-2 py-1.5 align-top text-zinc-200">{children}</td>,
+};
+
 function Body({ text }: { text: string }) {
-  const parts = text.split(/```/);
+  // dir="auto" lets a Persian message align right without a language setting.
   return (
-    <div className="space-y-2">
-      {parts.map((p, i) =>
-        i % 2 === 1 ? (
-          <pre key={i} className="overflow-x-auto rounded-md bg-black/40 p-3 text-[13.5px] leading-6">
-            {p.replace(/^[a-z]*\n/, "")}
-          </pre>
-        ) : (
-          p.trim() && (
-            <p key={i} className="whitespace-pre-wrap text-[15.5px] leading-7 text-zinc-100">
-              {p.trim()}
-            </p>
-          )
-        )
-      )}
+    <div className="space-y-2 break-words" dir="auto">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+        {text}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -196,6 +231,20 @@ function groupRows(messages: Message[]): Row[] {
   return rows;
 }
 
+// Average time from the person's message to each assistant's first reply,
+// over the rows on screen. Null until an assistant has replied to something.
+function replyStats(rows: Row[]): Record<"claude" | "chatgpt", number | null> {
+  const out: Record<"claude" | "chatgpt", number | null> = { claude: null, chatgpt: null };
+  for (const who of ["claude", "chatgpt"] as const) {
+    const deltas = rows
+      .filter((r) => r.user && r[who].length)
+      .map((r) => Date.parse(r[who][0].created_at) - Date.parse(r.user!.created_at))
+      .filter((d) => d >= 0);
+    if (deltas.length) out[who] = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+  }
+  return out;
+}
+
 function AudienceBadge({ to }: { to: Audience }) {
   const label = to === "both" ? "to both" : to === "none" ? "note" : `to ${NAME[to]}`;
   return <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[12px] text-zinc-400">{label}</span>;
@@ -205,11 +254,20 @@ function AudienceBadge({ to }: { to: Audience }) {
 // the assistant's colour, so the text stays as readable as the rest.
 const NAME_TONE: Record<string, string> = { claude: "text-orange-300", chatgpt: "text-emerald-300" };
 
-function Bubble({ m, playback }: { m: Message; playback: ReturnType<typeof useVoicePlayback> }) {
+function Bubble({ m, askedAt, playback }: { m: Message; askedAt?: string; playback: ReturnType<typeof useVoicePlayback> }) {
+  // How long after the person's message this reply landed.
+  const took = askedAt ? Date.parse(m.created_at) - Date.parse(askedAt) : NaN;
   return (
     <div className={`rounded-xl border p-4 ${playback.state.current?.id === m.id ? "border-indigo-500/70" : "border-zinc-800"}`}>
       <div className="mb-2 flex items-center justify-between text-[12px] text-zinc-500">
-        <span className={`font-semibold ${NAME_TONE[m.author] ?? "text-zinc-300"}`}>{NAME[m.author]}</span>
+        <span className="flex items-center gap-2">
+          <span className={`font-semibold ${NAME_TONE[m.author] ?? "text-zinc-300"}`}>{NAME[m.author]}</span>
+          {Number.isFinite(took) && took >= 0 && (
+            <span className="rounded-full border border-zinc-800 px-2 py-0.5 text-zinc-500" title="Time from your message to this reply">
+              in {spell(took)}
+            </span>
+          )}
+        </span>
         <span className="flex items-center gap-2"><ListenButton message={m} playback={playback} /><span>{clock(m.created_at)}</span></span>
       </div>
       {playback.state.mode === "voice-focus" ? <details><summary className="cursor-pointer text-[13px] text-zinc-400">Show text</summary><div className="mt-2"><Body text={m.body} /></div></details> : <Body text={m.body} />}
@@ -403,6 +461,7 @@ export default function BoardPage() {
   const active = threads.find((t) => t.id === activeId);
   const status = (name: "claude" | "chatgpt") => assistants.find((a) => a.name === name);
   const lastRow = rows[rows.length - 1];
+  const stats = replyStats(rows);
 
   return (
     <div className="flex h-screen">
@@ -475,8 +534,17 @@ export default function BoardPage() {
           </button>
           <h1 className="text-[15px] font-semibold">{active?.title ?? "…"}</h1>
           <div className="flex flex-wrap gap-x-5">
-            <span className="flex items-center gap-2 text-[12px]"><span className="font-medium text-orange-300">Claude</span><StatusChip a={status("claude")} now={now} /></span>
-            <span className="flex items-center gap-2 text-[12px]"><span className="font-medium text-emerald-300">ChatGPT</span><StatusChip a={status("chatgpt")} now={now} /></span>
+            {(["claude", "chatgpt"] as const).map((who) => (
+              <span key={who} className="flex items-center gap-2 text-[12px]">
+                <span className={`font-medium ${NAME_TONE[who]}`}>{NAME[who]}</span>
+                <StatusChip a={status(who)} now={now} />
+                {stats[who] != null && (
+                  <span className="text-zinc-500" title="Average time from your message to this assistant's first reply, in this conversation">
+                    · avg reply {spell(stats[who]!)}
+                  </span>
+                )}
+              </span>
+            ))}
           </div>
           {error && <span className="text-[12px] text-rose-400">{error}</span>}
         </header>
@@ -506,10 +574,19 @@ export default function BoardPage() {
                   const list = row[who];
                   const expected = row.user && (row.user.addressed_to === "both" || row.user.addressed_to === who);
                   const waiting = expected && list.length === 0 && row === lastRow;
+                  // "Working" once the assistant's read cursor has covered this message and it has not posted since.
+                  const a = status(who);
+                  const working = !!a && a.working_on_seq != null && !!row.user && a.working_on_seq >= row.user.seq;
                   return (
                     <div key={who} className="min-w-0 space-y-3">
-                      {list.map((m) => <Bubble key={m.id} m={m} playback={playback} />)}
-                      {waiting && <p className="rounded-xl border border-dashed border-zinc-800 p-4 text-[13px] text-zinc-500">Waiting for {NAME[who]}…</p>}
+                      {list.map((m) => <Bubble key={m.id} m={m} askedAt={row.user?.created_at} playback={playback} />)}
+                      {waiting && (
+                        <p className={`rounded-xl border border-dashed p-4 text-[13px] ${working ? "border-zinc-700 text-zinc-400" : "border-zinc-800 text-zinc-500"}`}>
+                          {working
+                            ? `${NAME[who]} read this ${ago(a?.last_checked_at, now)} and is working on it…`
+                            : `Waiting for ${NAME[who]}… last checked ${ago(a?.last_checked_at, now)}`}
+                        </p>
+                      )}
                     </div>
                   );
                 })}

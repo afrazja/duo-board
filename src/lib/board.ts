@@ -32,12 +32,28 @@ export interface AssistantStatus {
   last_seen_seq: number;
   last_checked_at: string | null;
   last_posted_at: string | null;
+  /** Seq of the latest message for this assistant that it has read but not answered; null when idle. */
+  working_on_seq: number | null;
 }
 
 const MESSAGE_COLUMNS = "seq, id, thread_id, author, addressed_to, body, spoken_summary, reply_to, created_at";
 
 function fail(error: { message: string } | null): never {
   throw new Error(error?.message ?? "Database error");
+}
+
+/**
+ * Update an assistant's row. working_on_seq is a later, additive column; if
+ * the migration has not been run yet, drop it and keep the rest of the stamp
+ * so cursors and timestamps never stall on a missing column.
+ */
+async function stampAssistant(name: Assistant, patch: Record<string, unknown>): Promise<void> {
+  const { error } = await db().from("assistants").update(patch).eq("name", name);
+  if (error && "working_on_seq" in patch) {
+    const rest = { ...patch };
+    delete rest.working_on_seq;
+    await db().from("assistants").update(rest).eq("name", name);
+  }
 }
 
 export async function listThreads(): Promise<ThreadSummary[]> {
@@ -115,13 +131,11 @@ export async function postMessage(input: {
   if (error) fail(error);
   const msg = data as Message;
   if (input.author !== "user") {
-    // An assistant has seen everything up to its own post.
+    // An assistant has seen everything up to its own post, and a post means
+    // it is no longer "working on" the message it read.
     const { data: cur } = await db().from("assistants").select("last_seen_seq").eq("name", input.author).single();
     const seen = Math.max(Number(cur?.last_seen_seq ?? 0), msg.seq);
-    await db()
-      .from("assistants")
-      .update({ last_posted_at: msg.created_at, last_seen_seq: seen })
-      .eq("name", input.author);
+    await stampAssistant(input.author, { last_posted_at: msg.created_at, last_seen_seq: seen, working_on_seq: null });
   }
   return msg;
 }
@@ -161,21 +175,33 @@ export async function readNew(assistant: Assistant, limit = 100): Promise<NewFor
     for_you: m.author === "user" && (m.addressed_to === "both" || m.addressed_to === assistant),
   }));
   const newCursor = messages.length ? messages[messages.length - 1].seq : cursor;
+  const forYou = messages.filter((m) => m.for_you);
 
-  await db()
-    .from("assistants")
-    .update({ last_seen_seq: newCursor, last_checked_at: new Date().toISOString() })
-    .eq("name", assistant);
+  // Reading a message addressed to this assistant marks it as being worked
+  // on until the assistant posts; the page shows that instead of a blank wait.
+  const stamp: Record<string, unknown> = { last_seen_seq: newCursor, last_checked_at: new Date().toISOString() };
+  if (forYou.length) stamp.working_on_seq = forYou[forYou.length - 1].seq;
+  await stampAssistant(assistant, stamp);
 
-  return { messages, pending_for_you: messages.filter((m) => m.for_you).length, cursor: newCursor,
-    ...(messages.some((m) => m.for_you && m.voice_mode) ? { response_guidance: BRIEF_AUDIO_GUIDANCE } : {}),
+  return {
+    messages,
+    pending_for_you: forYou.length,
+    cursor: newCursor,
+    ...(forYou.some((m) => m.voice_mode) ? { response_guidance: BRIEF_AUDIO_GUIDANCE } : {}),
   };
 }
 
 export async function assistantStatus(): Promise<AssistantStatus[]> {
-  const { data, error } = await db().from("assistants").select("name, last_seen_seq, last_checked_at, last_posted_at");
+  // select("*") so a database without the working_on_seq column still answers.
+  const { data, error } = await db().from("assistants").select("*");
   if (error) fail(error);
-  return (data ?? []).map((a) => ({ ...a, last_seen_seq: Number(a.last_seen_seq) })) as AssistantStatus[];
+  return (data ?? []).map((a) => ({
+    name: a.name,
+    last_seen_seq: Number(a.last_seen_seq),
+    last_checked_at: a.last_checked_at ?? null,
+    last_posted_at: a.last_posted_at ?? null,
+    working_on_seq: a.working_on_seq == null ? null : Number(a.working_on_seq),
+  })) as AssistantStatus[];
 }
 
 /** Lets an assistant re-read from a given point, e.g. after a lost reply. */
