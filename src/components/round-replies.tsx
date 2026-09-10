@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { AssistantStatus } from "@/lib/board";
 import { Body } from "./message-body";
 import { ListenButton, type useVoicePlayback } from "./voice-playback";
-import { hasBothAnswers, isFirstRound, openingExcerpt, type BoardMessage, type BoardRow } from "./round-model";
+import { hasBothAnswers, hasFirstAnswer, isFirstRound, openingExcerpt, type BoardMessage, type BoardRow } from "./round-model";
 
 const NAMES = { claude: "Claude", chatgpt: "ChatGPT", user: "You" };
 const TONES = { claude: "text-orange-300", chatgpt: "text-emerald-300", user: "text-indigo-300" };
@@ -55,12 +55,13 @@ export function RoundReplies({ row, state, assistants, now, playback, comparing,
   comparing: boolean; compareError?: string; onCompare: (question: BoardMessage) => void;
 }) {
   const blind = isFirstRound(row);
+  const live = row.user?.blind_round === false;
   const revealed = !state.held;
   const compare = row.comparison;
   const compared = compare && hasBothAnswers(compare, compare.request.id);
   return <div className="space-y-4">
     {blind && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
-      <div><p className="text-[13px] font-medium text-zinc-200">{state.paired ? "Both first answers are ready" : revealed ? "Available answers" : "First answers · waiting for both"}</p><p className="mt-0.5 text-[12px] leading-5 text-zinc-500">{state.paired ? "Read each take, then compare them when you want." : revealed ? "This first round has ended. You can read the replies received." : "Both answers will appear together when they are ready."}</p></div>
+      <div><p className="text-[13px] font-medium text-zinc-200">{live ? "Live replies" : state.paired ? "Both first answers are ready" : revealed ? "Available answers" : "First answers · waiting for both"}</p><p className="mt-0.5 text-[12px] leading-5 text-zinc-500">{live ? "Answers appear as they arrive. Assistants can see earlier replies." : state.paired ? "Read each take, then compare them when you want." : revealed ? "This first round has ended. You can read the replies received." : "Both answers will appear together when they are ready."}</p></div>
       {state.paired && !compare && <button type="button" disabled={comparing} onClick={() => row.user && onCompare(row.user)} className={BUTTON}>{comparing ? "Requesting comparison…" : "Compare answers"}</button>}
       {compare && <span className="rounded-full border border-indigo-500/30 px-2.5 py-1 text-[12px] text-indigo-300">{compared ? "Comparison complete" : "Comparison requested"}</span>}
       {compareError && <p role="alert" className="w-full text-[13px] text-rose-300">{compareError} You can try Compare answers again.</p>}
@@ -75,7 +76,7 @@ export function RoundReplies({ row, state, assistants, now, playback, comparing,
       const expected = row.user && (row.user.addressed_to === "both" || row.user.addressed_to === who);
       return <div key={who} className="min-w-0 space-y-3">
         {revealed && row[who].map((message) => <ReplyBubble key={message.id} message={message} askedAt={row.user?.created_at} playback={playback} compact={blind} />)}
-        {expected && (!revealed || !row[who].length) && <Waiting who={who} question={row.user} now={now} ended={blind && revealed && !state.paired} ready={row[who].length > 0} status={assistants.find((a) => a.name === who)} />}
+        {expected && (!revealed || (blind ? !hasFirstAnswer(row, who) : !row[who].length)) && <Waiting who={who} question={row.user} now={now} ended={blind && !live && revealed && !state.paired} ready={!revealed && hasFirstAnswer(row, who)} status={assistants.find((a) => a.name === who)} />}
       </div>;
     })}</div>
   </div>;

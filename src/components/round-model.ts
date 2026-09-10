@@ -55,11 +55,16 @@ export function hasBothAnswers(replies: Replies, questionId?: string): boolean {
   return (["claude", "chatgpt"] as const).every((who) => replies[who].some((message) => !questionId || message.reply_to === questionId));
 }
 
+export function hasFirstAnswer(row: BoardRow, who: "claude" | "chatgpt"): boolean {
+  return row[who].some((message) => message.reply_to === row.user?.id || message.kind === undefined);
+}
+
 export function roundState(row: BoardRow, rows: BoardRow[], now: number) {
   const question = row.user;
   if (!question || !isFirstRound(row)) return { held: false, paired: false };
-  const answered = (who: "claude" | "chatgpt") => row[who].some((message) => message.reply_to === question.id || message.kind === undefined);
+  const answered = (who: "claude" | "chatgpt") => hasFirstAnswer(row, who);
   const paired = answered("claude") && answered("chatgpt");
+  if (question.blind_round === false) return { paired, held: false };
   const expired = now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000;
   const movedOn = (who: "claude" | "chatgpt") => answered(who) || rows.some((later) => later.user && later.user.seq > question.seq && later[who].some((message) => message.reply_to === later.user!.id));
   return { paired, held: !paired && !expired && !(movedOn("claude") && movedOn("chatgpt")) };

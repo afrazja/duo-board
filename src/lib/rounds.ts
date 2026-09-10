@@ -17,6 +17,8 @@ export interface RoundMessage {
   addressed_to: "both" | Assistant | "none";
   reply_to: string | null;
   created_at: string;
+  /** Snapshot on the question; later conversation settings never change it. */
+  blind_round?: boolean;
 }
 
 /** After this long, a round stops withholding even if an answer never used reply_to. */
@@ -87,7 +89,7 @@ export function withheldFrom(
       if (m.reply_to) held.add(m.seq);
       continue;
     }
-    if (q.addressed_to !== "both") continue;
+    if (q.addressed_to !== "both" || q.blind_round === false) continue;
     if (!hasAnswered(who, q, thread, now)) held.add(m.seq);
   }
   return held;

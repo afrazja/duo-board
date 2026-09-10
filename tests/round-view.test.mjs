@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupRows, mergeMessages, playableMessages, roundState, hasBothAnswers, openingExcerpt } from '../src/components/round-model.ts';
+import { groupRows, mergeMessages, playableMessages, roundState, hasBothAnswers, hasFirstAnswer, openingExcerpt } from '../src/components/round-model.ts';
 
 const message = (seq, author, extra = {}) => ({ seq, id: String(seq), thread_id: 'thread', author, addressed_to: author === 'user' ? 'both' : 'none', body: `Reply ${seq}`, spoken_summary: null, reply_to: null, kind: 'message', created_at: new Date(seq * 1000).toISOString(), ...extra });
 
@@ -28,6 +28,24 @@ test('a held first answer never enters playback; both enter in arrival order on 
 test('unlinked progress does not reveal a modern round or enable Compare', () => {
   const rows = groupRows([message(1, 'user'), message(2, 'chatgpt'), message(3, 'claude', { reply_to: '1' })]);
   assert.deepEqual(roundState(rows[0], rows, 4000), { held: true, paired: false });
+  assert.equal(hasFirstAnswer(rows[0], 'chatgpt'), false, 'Progress cannot claim Answer ready');
+  assert.equal(hasFirstAnswer(rows[0], 'claude'), true);
+});
+
+test('Live mode reveals and plays the first answer immediately, but Compare still waits for two answers', () => {
+  const first = [message(1, 'user', { blind_round: false }), message(2, 'claude', { reply_to: '1' })];
+  const rows = groupRows(first);
+  assert.deepEqual(roundState(rows[0], rows, 4000), { held: false, paired: false });
+  assert.deepEqual(playableMessages(rows, 4000).map(m => m.seq), [1, 2]);
+  const complete = groupRows([...first, message(3, 'chatgpt', { reply_to: '1' })]);
+  assert.deepEqual(roundState(complete[0], complete, 4000), { held: false, paired: true });
+});
+
+test('Live and separate questions retain their own behavior in the same conversation', () => {
+  const rows = groupRows([message(1, 'user', { blind_round: true }), message(2, 'claude', { reply_to: '1' }), message(3, 'user', { blind_round: false }), message(4, 'claude', { reply_to: '3' })]);
+  assert.deepEqual(roundState(rows[0], rows, 5000), { held: true, paired: false });
+  assert.deepEqual(roundState(rows[1], rows, 5000), { held: false, paired: false });
+  assert.deepEqual(playableMessages(rows, 5000).map(m => m.seq), [1, 3, 4]);
 });
 
 test('expired and moved-on rounds release available text without claiming both answered', () => {

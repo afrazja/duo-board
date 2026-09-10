@@ -226,11 +226,14 @@ export default function BoardPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [savingBrief, setSavingBrief] = useState(false);
+  const [savingAnswerMode, setSavingAnswerMode] = useState(false);
+  const [answerModeError, setAnswerModeError] = useState("");
   const [comparing, setComparing] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
   const compareRequests = useRef(new Set<string>());
   const loaded = useRef<{ threadId: string | null; messages: BoardMessage[] }>({ threadId: null, messages: [] });
   const briefSaveVersion = useRef(0);
+  const answerModeSaveVersion = useRef(0);
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
@@ -289,12 +292,13 @@ export default function BoardPage() {
       polling = true;
       try {
         const versionAtPoll = briefSaveVersion.current;
+        const answerVersionAtPoll = answerModeSaveVersion.current;
         const res = await fetch(`/api/messages?thread=${activeId}&after=${lastSeq.current}`);
         if (res.status === 401) {
           location.href = "/login";
           return;
         }
-        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean };
+        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean; blind_first_round?: boolean };
         if (stopped) return;
         if (data.error) {
           setError(data.error);
@@ -309,6 +313,9 @@ export default function BoardPage() {
         if (data.messages && data.messages.length) {
           acceptMessages(activeId, data.messages, data.now);
           lastSeq.current = Math.max(lastSeq.current, ...data.messages.map((message) => message.seq));
+        }
+        if (typeof data.blind_first_round === "boolean" && answerVersionAtPoll % 2 === 0 && answerVersionAtPoll === answerModeSaveVersion.current) {
+          setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.blind_first_round !== data.blind_first_round ? { ...thread, blind_first_round: data.blind_first_round! } : thread));
         }
       } catch (e) {
         if (!stopped) setError((e as Error).message);
@@ -332,6 +339,7 @@ export default function BoardPage() {
 
   async function send(e?: FormEvent) {
     e?.preventDefault();
+    if (answerModeSaveVersion.current % 2 !== 0) return;
     const body = draft.trim();
     if (!body || !activeId || sending) return;
     const threadId = activeId;
@@ -393,6 +401,7 @@ export default function BoardPage() {
   }
 
   function pickThread(id: string) {
+    setAnswerModeError("");
     setActiveId(id);
     setNavOpen(false);
   }
@@ -413,6 +422,21 @@ export default function BoardPage() {
   }
 
   const rows = groupRows(messages);
+  async function changeAnswerMode(blind: boolean) {
+    if (!activeId || answerModeSaveVersion.current % 2 !== 0) return;
+    const threadId = activeId;
+    answerModeSaveVersion.current += 1;
+    setSavingAnswerMode(true);
+    setAnswerModeError("");
+    try {
+      const res = await fetch("/api/threads", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: threadId, blind_first_round: blind }) });
+      const data = await res.json() as { thread?: { blind_first_round: boolean }; error?: string };
+      if (!res.ok || typeof data.thread?.blind_first_round !== "boolean") throw new Error(data.error ?? "Could not save answer mode");
+      setThreads((prev) => prev.map((thread) => thread.id === threadId ? { ...thread, blind_first_round: data.thread!.blind_first_round } : thread));
+    } catch (e) { if (loaded.current.threadId === threadId) setAnswerModeError((e as Error).message); }
+    finally { answerModeSaveVersion.current += 1; setSavingAnswerMode(false); }
+  }
+
   const active = threads.find((t) => t.id === activeId);
   const status = (name: "claude" | "chatgpt") => assistants.find((a) => a.name === name);
   const stats = replyStats(rows);
@@ -529,6 +553,16 @@ export default function BoardPage() {
         </div>
 
         <form onSubmit={send} className="border-t border-zinc-800 p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <label htmlFor="answer-mode" className="text-[12px] font-medium text-zinc-300">Answer mode</label>
+            <select id="answer-mode" aria-describedby="answer-mode-help" value={active?.blind_first_round === false ? "live" : "separate"} disabled={!activeId || savingAnswerMode || sending} onChange={(e) => void changeAnswerMode(e.target.value === "separate")} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-[13px] text-zinc-200 focus-visible:outline-indigo-400 disabled:opacity-50">
+              <option value="live">Live replies</option>
+              <option value="separate">Separate first answers</option>
+            </select>
+            <span role="status" className="text-[12px] text-zinc-500">{savingAnswerMode ? "Saving…" : "Saved for new questions in this conversation"}</span>
+            <p id="answer-mode-help" className="w-full text-[12px] leading-5 text-zinc-400">{active?.blind_first_round === false ? "Show each answer as it arrives. Assistants can see earlier replies." : "For questions to Both, each answers before seeing the other’s reply; reveal both together."} Existing questions keep their original mode.</p>
+            {answerModeError && <p role="alert" className="w-full text-[12px] text-rose-300">{answerModeError} Check the selected mode or try again.</p>}
+          </div>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -585,7 +619,7 @@ export default function BoardPage() {
               )}
               <button
                 type="submit"
-                disabled={sending || !draft.trim()}
+                disabled={sending || savingAnswerMode || !draft.trim()}
                 className="h-9 rounded-lg bg-indigo-600 px-4 text-[14px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
               >
                 {sending ? "Sending…" : "Send"}

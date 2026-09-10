@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test:voice": "node --experimental-strip-types --test tests/speech-playback.test.mjs",
     "test:rounds": "node --experimental-strip-types --test tests/rounds.test.mjs",
-    "test": "npm run test:voice && npm run test:rounds"
+    "test:view": "node --experimental-strip-types --test tests/round-view.test.mjs",
+    "test": "npm run test:voice && npm run test:rounds && npm run test:view"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

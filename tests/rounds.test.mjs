@@ -34,6 +34,30 @@ const byThread = (...msgs) => {
   return map;
 };
 
+test("Live mode exposes the first reply without waiting for the other assistant", () => {
+  seq = 0;
+  const q = { ...msg("user", { id: "live" }), blind_round: false };
+  const reply = msg("claude", { replyTo: q.id });
+  assert.deepEqual([...withheldFrom("chatgpt", [reply], byThread(q, reply), T0 + 60_000)], []);
+});
+
+test("A later Live question does not change an earlier separate round", () => {
+  seq = 0;
+  const separate = { ...msg("user", { id: "separate" }), blind_round: true };
+  const live = { ...msg("user", { id: "live" }), blind_round: false };
+  const oldReply = msg("claude", { replyTo: separate.id });
+  const newReply = msg("claude", { replyTo: live.id });
+  assert.deepEqual([...withheldFrom("chatgpt", [oldReply, newReply], byThread(separate, live, oldReply, newReply), T0 + 60_000)], [oldReply.seq]);
+});
+
+test("A Live reply chain follows its question mode even when its own field is absent", () => {
+  seq = 0;
+  const q = { ...msg("user", { id: "live" }), blind_round: false };
+  const reply = msg("claude", { id: "reply", replyTo: q.id });
+  const followup = msg("claude", { replyTo: reply.id });
+  assert.deepEqual([...withheldFrom("chatgpt", [followup], byThread(q, reply, followup), T0 + 60_000)], []);
+});
+
 test("questionFor finds the latest person's message before a reply, in the same thread", () => {
   seq = 0;
   const q1 = msg("user", { id: "q1" });

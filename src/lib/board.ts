@@ -19,6 +19,7 @@ export interface Message {
   reply_to: string | null;
   created_at: string;
   kind: Kind;
+  blind_round: boolean;
 }
 
 export interface ThreadSummary {
@@ -29,6 +30,7 @@ export interface ThreadSummary {
   message_count: number;
   last_message_at: string | null;
   brief_audio: boolean;
+  blind_first_round: boolean;
 }
 
 export interface AssistantStatus {
@@ -76,14 +78,29 @@ function hasRounds(): Promise<boolean> {
   return roundsProbe!.value;
 }
 
+let answerModesProbe: { at: number; value: Promise<boolean> } | null = null;
+function hasAnswerModes(): Promise<boolean> {
+  if (!answerModesProbe || Date.now() - answerModesProbe.at > 60_000) {
+    const value = (async () => {
+      const { error } = await db().from("messages").select("blind_round").limit(1);
+      return !error;
+    })();
+    const probe = { at: Date.now(), value };
+    answerModesProbe = probe;
+    void value.then((ok) => { if (ok) probe.at = Number.POSITIVE_INFINITY; });
+  }
+  return answerModesProbe.value;
+}
+
 async function columns(): Promise<string> {
-  return (await hasRounds()) ? `${BASE_COLUMNS}, kind` : BASE_COLUMNS;
+  const base = (await hasRounds()) ? `${BASE_COLUMNS}, kind` : BASE_COLUMNS;
+  return (await hasAnswerModes()) ? `${base}, blind_round` : base;
 }
 
 // Rows come back untyped because the column list is chosen at runtime.
 function asMessage(row: unknown): Message {
   const r = row as Record<string, unknown>;
-  return { ...(r as unknown as Message), kind: (r.kind as Kind | undefined) ?? "message" };
+  return { ...(r as unknown as Message), kind: (r.kind as Kind | undefined) ?? "message", blind_round: r.blind_round !== false };
 }
 
 /**
@@ -93,20 +110,22 @@ function asMessage(row: unknown): Message {
  * to an old question could not be judged; with it, it is judged correctly.
  */
 async function roundContext(threadId: string, anchors: { reply_to: string | null }[] = []): Promise<RoundMessage[]> {
+  const roundColumns: string = (await hasAnswerModes()) ? `${ROUND_COLUMNS}, blind_round` : ROUND_COLUMNS;
   const { data, error } = await db()
     .from("messages")
-    .select(ROUND_COLUMNS)
+    .select(roundColumns)
     .eq("thread_id", threadId)
     .order("seq", { ascending: false })
     .limit(ROUND_CONTEXT);
   if (error) fail(error);
-  const rows = (data ?? []) as RoundMessage[];
+  // Supabase cannot infer a row type from this migration-dependent selection.
+  const rows = (data ?? []) as unknown as RoundMessage[];
   const have = new Set(rows.map((m) => m.id));
   let wanted = anchors.map((a) => a.reply_to).filter((id): id is string => !!id && !have.has(id));
   for (let hop = 0; hop < 4 && wanted.length; hop++) {
-    const { data: parents, error: pErr } = await db().from("messages").select(ROUND_COLUMNS).eq("thread_id", threadId).in("id", wanted);
+    const { data: parents, error: pErr } = await db().from("messages").select(roundColumns).eq("thread_id", threadId).in("id", wanted);
     if (pErr) fail(pErr);
-    const found = (parents ?? []) as RoundMessage[];
+    const found = (parents ?? []) as unknown as RoundMessage[];
     if (!found.length) break;
     for (const p of found) {
       rows.push(p);
@@ -114,9 +133,9 @@ async function roundContext(threadId: string, anchors: { reply_to: string | null
     }
     // An old question's direct replies decide whether it was answered, and
     // they may be outside the window too.
-    const { data: replies, error: rErr } = await db().from("messages").select(ROUND_COLUMNS).eq("thread_id", threadId).in("reply_to", found.map((p) => p.id));
+    const { data: replies, error: rErr } = await db().from("messages").select(roundColumns).eq("thread_id", threadId).in("reply_to", found.map((p) => p.id));
     if (rErr) fail(rErr);
-    for (const r of (replies ?? []) as RoundMessage[]) {
+    for (const r of (replies ?? []) as unknown as RoundMessage[]) {
       if (!have.has(r.id)) {
         rows.push(r);
         have.add(r.id);
@@ -146,31 +165,31 @@ async function stampAssistant(name: Assistant, patch: Record<string, unknown>): 
 export async function listThreads(): Promise<ThreadSummary[]> {
   const { data, error } = await db()
     .from("thread_summaries")
-    .select("id, title, archived, created_at, message_count, last_message_at, brief_audio")
+    .select("*")
     .eq("archived", false)
     .order("created_at", { ascending: false });
   if (error) fail(error);
-  return (data ?? []).map((t) => ({ ...t, message_count: Number(t.message_count) }));
+  return (data ?? []).map((t) => ({ ...t, message_count: Number(t.message_count), blind_first_round: t.blind_first_round !== false }));
 }
 
 export async function createThread(title: string): Promise<ThreadSummary> {
   const clean = title.trim().slice(0, 120);
   if (!clean) throw new Error("A thread needs a title");
-  const { data, error } = await db().from("threads").insert({ title: clean }).select("id, title, archived, created_at, brief_audio").single();
+  const { data, error } = await db().from("threads").insert({ title: clean }).select("*").single();
   if (error) fail(error);
-  return { ...data, message_count: 0, last_message_at: null };
+  return { ...data, message_count: 0, last_message_at: null, blind_first_round: data.blind_first_round !== false };
 }
 
-export async function setBriefAudio(threadId: string, briefAudio: boolean) {
-  const { data, error } = await db().from("threads").update({ brief_audio: briefAudio }).eq("id", threadId).select("id, brief_audio").single();
+export async function setThreadPreferences(threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean }) {
+  const { data, error } = await db().from("threads").update(preferences).eq("id", threadId).select("*").single();
   if (error) fail(error);
-  return data as { id: string; brief_audio: boolean };
+  return { id: data.id as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false };
 }
 
-export async function getBriefAudio(threadId: string) {
-  const { data, error } = await db().from("threads").select("brief_audio").eq("id", threadId).single();
+export async function getThreadPreferences(threadId: string) {
+  const { data, error } = await db().from("threads").select("*").eq("id", threadId).single();
   if (error) fail(error);
-  return Boolean(data.brief_audio);
+  return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false };
 }
 
 export async function getMessages(threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
@@ -302,7 +321,9 @@ type Candidate = Message & { threads: { title: string; brief_audio: boolean } };
 const CANDIDATE_SELECT = `${BASE_COLUMNS}, threads!inner(title, brief_audio)`;
 // The migrated reader needs kind to attach the original answers to Compare.
 // Keep the legacy selection separate for databases without that column.
-const ROUND_CANDIDATE_SELECT = `${BASE_COLUMNS}, kind, threads!inner(title, brief_audio)`;
+async function roundCandidateSelect() {
+  return `${await columns()}, threads!inner(title, brief_audio)`;
+}
 
 function decorate(assistant: Assistant, rows: Candidate[]) {
   return rows.map(({ threads, ...m }) => ({
@@ -369,6 +390,7 @@ async function readNewLegacy(assistant: Assistant, limit: number): Promise<NewFo
  * scanning always reaches newer messages.
  */
 async function readNewRounds(assistant: Assistant, limit: number): Promise<NewForAssistant> {
+  const candidateSelect = await roundCandidateSelect();
   const { data: cur, error: curErr } = await db().from("assistants").select("floor_seq, last_seen_seq, held_seqs").eq("name", assistant).single();
   if (curErr) fail(curErr);
   const floor = Number(cur?.floor_seq ?? 0);
@@ -377,7 +399,7 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   // New candidates above the floor, plus everything previously held.
   const { data, error } = await db()
     .from("messages")
-    .select(ROUND_CANDIDATE_SELECT)
+    .select(candidateSelect)
     .gt("seq", floor)
     .neq("author", assistant)
     .order("seq", { ascending: true })
@@ -388,7 +410,7 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   let heldRows: Candidate[] = [];
   const heldToFetch = heldBefore.filter((s) => !candidates.some((c) => c.seq === s));
   if (heldToFetch.length) {
-    const { data: hd, error: hdErr } = await db().from("messages").select(ROUND_CANDIDATE_SELECT).in("seq", heldToFetch);
+    const { data: hd, error: hdErr } = await db().from("messages").select(candidateSelect).in("seq", heldToFetch);
     if (hdErr) fail(hdErr);
     heldRows = (hd ?? []).map((r) => asMessage(r) as Candidate);
   }
