@@ -73,6 +73,15 @@ create table if not exists public.assistant_deliveries (
 alter table public.assistant_deliveries enable row level security;
 revoke all on public.assistant_deliveries from anon, authenticated;
 
+-- Replies held back from an assistant, remembered by seq so the delivery
+-- floor can move past them while they stay hidden.
+alter table public.assistants add column if not exists held_seqs bigint[] not null default '{}';
+
+-- One compare request per question, enforced by the database so two clicks
+-- at once cannot create two.
+create unique index if not exists messages_one_compare_per_question
+  on public.messages (thread_id, reply_to) where kind = 'compare' and author = 'user';
+
 -- Thread list with counts and last activity, in one query.
 create or replace view public.thread_summaries with (security_invoker = true) as
 select t.id, t.title, t.archived, t.created_at,

@@ -91,6 +91,37 @@ test("A compare request starts a new blind round of its own", () => {
   assert.deepEqual([...withheldFrom("claude", [gpt, gptCompare], thread, T0 + 60_000)], [gptCompare.seq]);
 });
 
+test("A late answer is matched to its question by reply_to, not by arrival order", () => {
+  seq = 0;
+  const qA = msg("user", { id: "qA" });
+  const mineA = msg("claude", { replyTo: "qA" });
+  const qB = msg("user", { id: "qB" });
+  const gptA = msg("chatgpt", { replyTo: "qA" }); // arrives after qB, answers qA
+  const thread = byThread(qA, mineA, qB, gptA);
+  assert.equal(questionFor(gptA, [qA, mineA, qB, gptA])?.id, "qA");
+  // Claude answered qA, so ChatGPT's late answer to qA is not withheld...
+  assert.deepEqual([...withheldFrom("claude", [gptA], thread, T0 + 60_000)], []);
+  // ...even though Claude has not answered qB yet.
+  const gptB = msg("chatgpt", { replyTo: "qB" });
+  assert.deepEqual([...withheldFrom("claude", [gptB], byThread(qA, mineA, qB, gptA, gptB), T0 + 60_000)], [gptB.seq]);
+});
+
+test("A reply to a reply resolves through the chain to the person's question", () => {
+  seq = 0;
+  const q = msg("user", { id: "q" });
+  const mine = msg("claude", { id: "mine", replyTo: "q" });
+  const gptToMine = msg("chatgpt", { replyTo: "mine" });
+  assert.equal(questionFor(gptToMine, [q, mine, gptToMine])?.id, "q");
+});
+
+test("An unlinked reply falls back to the latest question before it", () => {
+  seq = 0;
+  const q1 = msg("user", { id: "q1" });
+  const q2 = msg("user", { id: "q2" });
+  const gpt = msg("chatgpt");
+  assert.equal(questionFor(gpt, [q1, q2, gpt])?.id, "q2");
+});
+
 test("Threads are independent: a reply in one thread is judged against that thread's question", () => {
   seq = 0;
   const qA = msg("user", { id: "qA", thread: "A" });

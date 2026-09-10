@@ -22,8 +22,16 @@ export interface RoundMessage {
 /** After this long, a round stops withholding even if an answer never used reply_to. */
 export const STALE_ROUND_MS = 2 * 60 * 60 * 1000;
 
-/** The question a message answers: the latest person's message in its thread with a lower seq. */
-export function questionFor(m: RoundMessage, thread: RoundMessage[]): RoundMessage | null {
+/**
+ * The question a message answers. An explicit reply link wins, followed
+ * through an assistant's message when the reply is to a reply; without one,
+ * the latest person's message in the thread before it.
+ */
+export function questionFor(m: RoundMessage, thread: RoundMessage[], depth = 0): RoundMessage | null {
+  if (m.reply_to && depth < 8) {
+    const target = thread.find((x) => x.id === m.reply_to && x.thread_id === m.thread_id);
+    if (target) return target.author === "user" ? target : questionFor(target, thread, depth + 1);
+  }
   let best: RoundMessage | null = null;
   for (const q of thread) {
     if (q.author !== "user" || q.thread_id !== m.thread_id || q.seq >= m.seq) continue;
