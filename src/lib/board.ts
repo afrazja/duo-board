@@ -1,7 +1,7 @@
 import { db } from "./db";
 import type { Assistant } from "./agent-auth";
 import { BRIEF_AUDIO_GUIDANCE, normalizeSpokenReply } from "./spoken-reply";
-import { hasAnswered, withheldFrom, type RoundMessage } from "./rounds";
+import { hasLinkedAnswer, withheldFrom, type RoundMessage } from "./rounds";
 
 export type Author = "user" | Assistant;
 export type Audience = "both" | Assistant | "none";
@@ -220,8 +220,10 @@ async function validateCompareTarget(threadId: string, questionId: string): Prom
   if (!q || q.author !== "user" || q.addressed_to !== "both") {
     throw new Error("A compare request needs a recent question in this thread that was addressed to both");
   }
+  // A real linked answer from each side: a round released by the moved-on or
+  // timeout valve has nothing to compare.
   for (const who of ASSISTANTS) {
-    if (!hasAnswered(who, q, thread)) throw new Error(`Compare waits until both have answered; ${who} has not yet`);
+    if (!hasLinkedAnswer(who, q, thread)) throw new Error(`Compare waits until both have answered; ${who} has not yet`);
   }
 }
 
@@ -402,10 +404,13 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
     if (insErr) fail(insErr);
   }
 
-  // Held replies are remembered by seq so the floor can move past them. The
-  // floor stops just below the first candidate that is neither delivered,
-  // held, nor in this read's output (i.e. beyond the limit).
-  const heldNow = pool.filter((m) => held.has(m.seq)).map((m) => m.seq);
+  // Held replies are remembered by seq so the floor can move past them, and a
+  // previously held reply stays remembered until it is actually delivered,
+  // even once eligible, in case it fell beyond this read's limit. The floor
+  // stops just below the first candidate that is neither delivered, held, nor
+  // in this read's output (i.e. beyond the limit).
+  const heldBeforeSet = new Set(heldBefore);
+  const heldNow = pool.filter((m) => !outSeqs.has(m.seq) && (held.has(m.seq) || heldBeforeSet.has(m.seq))).map((m) => m.seq);
   const beyondLimit = candidates.filter((m) => !delivered.has(m.seq) && !held.has(m.seq) && !outSeqs.has(m.seq));
   const newFloor = beyondLimit.length ? Math.min(...beyondLimit.map((m) => m.seq)) - 1 : candidates.length ? candidates[candidates.length - 1].seq : floor;
 

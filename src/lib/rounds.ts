@@ -40,6 +40,11 @@ export function questionFor(m: RoundMessage, thread: RoundMessage[], depth = 0):
   return best;
 }
 
+/** Whether `who` has a post whose reply_to names `q` directly: a real first answer, no safety valves. */
+export function hasLinkedAnswer(who: Assistant, q: RoundMessage, thread: RoundMessage[]): boolean {
+  return thread.some((x) => x.author === who && x.thread_id === q.thread_id && x.seq > q.seq && x.reply_to === q.id);
+}
+
 /**
  * Whether `who` has answered question `q`. An answer is a post by `who` whose
  * reply_to names the question. Two safety valves stop a round withholding

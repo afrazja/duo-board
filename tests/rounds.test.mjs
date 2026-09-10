@@ -1,6 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasAnswered, questionFor, withheldFrom, STALE_ROUND_MS } from "../src/lib/rounds.ts";
+import { hasAnswered, hasLinkedAnswer, questionFor, withheldFrom, STALE_ROUND_MS } from "../src/lib/rounds.ts";
+
+test("hasLinkedAnswer needs a direct reply link; the safety valves do not count", () => {
+  seq = 0;
+  const q = msg("user", { id: "q", at: Date.parse("2026-09-10T12:00:00Z") });
+  const note = msg("claude");
+  const q2 = msg("user", { id: "q2" });
+  const mine2 = msg("claude", { replyTo: "q2" });
+  const thread = [q, note, q2, mine2];
+  // Moved on and stale both make hasAnswered true...
+  assert.equal(hasAnswered("claude", q, thread, Date.parse("2026-09-10T15:00:00Z")), true);
+  // ...but neither is a linked first answer.
+  assert.equal(hasLinkedAnswer("claude", q, thread), false);
+  const mine = msg("claude", { replyTo: "q" });
+  assert.equal(hasLinkedAnswer("claude", q, [...thread, mine]), true);
+});
 
 const T0 = Date.parse("2026-09-10T12:00:00Z");
 let seq = 0;
