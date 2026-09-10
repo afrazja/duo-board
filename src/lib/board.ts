@@ -300,6 +300,9 @@ export interface NewForAssistant {
 
 type Candidate = Message & { threads: { title: string; brief_audio: boolean } };
 const CANDIDATE_SELECT = `${BASE_COLUMNS}, threads!inner(title, brief_audio)`;
+// The migrated reader needs kind to attach the original answers to Compare.
+// Keep the legacy selection separate for databases without that column.
+const ROUND_CANDIDATE_SELECT = `${BASE_COLUMNS}, kind, threads!inner(title, brief_audio)`;
 
 function decorate(assistant: Assistant, rows: Candidate[]) {
   return rows.map(({ threads, ...m }) => ({
@@ -374,7 +377,7 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   // New candidates above the floor, plus everything previously held.
   const { data, error } = await db()
     .from("messages")
-    .select(CANDIDATE_SELECT)
+    .select(ROUND_CANDIDATE_SELECT)
     .gt("seq", floor)
     .neq("author", assistant)
     .order("seq", { ascending: true })
@@ -385,7 +388,7 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   let heldRows: Candidate[] = [];
   const heldToFetch = heldBefore.filter((s) => !candidates.some((c) => c.seq === s));
   if (heldToFetch.length) {
-    const { data: hd, error: hdErr } = await db().from("messages").select(CANDIDATE_SELECT).in("seq", heldToFetch);
+    const { data: hd, error: hdErr } = await db().from("messages").select(ROUND_CANDIDATE_SELECT).in("seq", heldToFetch);
     if (hdErr) fail(hdErr);
     heldRows = (hd ?? []).map((r) => asMessage(r) as Candidate);
   }
