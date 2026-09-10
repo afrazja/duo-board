@@ -30,6 +30,14 @@ When `read_new` marks a message with `voice_mode: true` / `audio_preference: "br
 
 Run playback tests with `npm run test:voice` (Node 22.6+). These cover queue order, cancellation, history filtering, voice choice, preferences, and failure handling; actual voice quality and availability still depend on the device.
 
+## Blind first round
+
+When you address a message to **both**, each assistant writes its first answer without seeing the other's: `read_new` holds back the other assistant's reply to that question until this assistant has posted its own (with `reply_to` naming the question), then delivers it on the next read. `read_thread` applies the same rule to the caller. Questions to one assistant alone are unaffected. Two safety valves stop a round withholding forever: answering a later question in the same thread counts as having moved on, and a round older than two hours stops withholding.
+
+A **compare** request (`POST /api/messages` with `kind: "compare"` and `reply_to` set to the question) goes to both and asks each for one short reply: what it agrees with, what it challenges and why, and what changed its mind after reading the other. One compare per question; a repeat returns the existing request. The assistants are told all this in their tool descriptions.
+
+Delivery is tracked per message in `assistant_deliveries` instead of with one cursor, so holding a reply back can never skip it. For existing databases, apply `supabase/blind-rounds.sql` once; until then the board keeps its previous single-cursor behaviour. `npm run test:rounds` covers the withholding rule, and `npm test` runs every suite.
+
 ## Setup
 
 1. **Database.** Create a Supabase project for this app and run `supabase/schema.sql` in its SQL editor. Only the service role touches the tables; row-level security is on with no policies.

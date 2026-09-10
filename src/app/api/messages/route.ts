@@ -1,4 +1,4 @@
-import { assistantStatus, getBriefAudio, getMessages, postMessage, type Audience } from "@/lib/board";
+import { assistantStatus, findCompare, getBriefAudio, getMessages, postMessage, type Audience } from "@/lib/board";
 
 const AUDIENCES: Audience[] = ["both", "claude", "chatgpt", "none"];
 
@@ -19,12 +19,21 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { thread_id?: unknown; body?: unknown; addressed_to?: unknown };
-    const addressedTo = AUDIENCES.includes(body.addressed_to as Audience) ? (body.addressed_to as Audience) : "both";
+    const body = (await req.json()) as { thread_id?: unknown; body?: unknown; addressed_to?: unknown; reply_to?: unknown; kind?: unknown };
     if (typeof body.thread_id !== "string" || typeof body.body !== "string") {
       return Response.json({ error: "thread_id and body are required" }, { status: 400 });
     }
-    const message = await postMessage({ threadId: body.thread_id, author: "user", addressedTo, body: body.body });
+    const replyTo = typeof body.reply_to === "string" ? body.reply_to : null;
+    // A compare request always goes to both and must name the question it is about.
+    const compare = body.kind === "compare";
+    if (compare && !replyTo) return Response.json({ error: "a compare request needs reply_to" }, { status: 400 });
+    if (compare && replyTo) {
+      // One compare per question: a repeat click returns the request already made.
+      const existing = await findCompare(body.thread_id, replyTo);
+      if (existing) return Response.json({ message: existing, existing: true });
+    }
+    const addressedTo = compare ? "both" : AUDIENCES.includes(body.addressed_to as Audience) ? (body.addressed_to as Audience) : "both";
+    const message = await postMessage({ threadId: body.thread_id, author: "user", addressedTo, body: body.body, replyTo, kind: compare ? "compare" : "message" });
     return Response.json({ message });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400 });

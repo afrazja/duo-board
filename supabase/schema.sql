@@ -22,7 +22,10 @@ create table if not exists public.messages (
   body         text not null check (char_length(body) between 1 and 20000),
   spoken_summary text check (spoken_summary is null or char_length(spoken_summary) between 1 and 1200),
   reply_to     uuid references public.messages(id) on delete set null,
-  created_at   timestamptz not null default now()
+  created_at   timestamptz not null default now(),
+  -- 'compare' asks both assistants for a short agree / challenge / changed
+  -- reply about the question named in reply_to.
+  kind         text not null default 'message' check (kind in ('message', 'compare'))
 );
 
 create index if not exists messages_thread_seq on public.messages (thread_id, seq);
@@ -44,6 +47,31 @@ on conflict (name) do nothing;
 -- turns it into "read this 2m ago, working" instead of a blank wait.
 -- Additive: existing installs run just this line.
 alter table public.assistants add column if not exists working_on_seq bigint;
+
+-- Blind first round (additive; existing installs run this block once).
+-- Delivery is tracked per message instead of with one cursor, so a reply
+-- from the other assistant can be held back until this assistant has
+-- answered the same question, and nothing is ever skipped.
+alter table public.messages add column if not exists kind text not null default 'message';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'messages_kind_check') then
+    alter table public.messages add constraint messages_kind_check check (kind in ('message', 'compare'));
+  end if;
+end $$;
+
+-- Everything at or below floor_seq is delivered to (or written by) the assistant.
+alter table public.assistants add column if not exists floor_seq bigint not null default 0;
+update public.assistants set floor_seq = last_seen_seq where floor_seq = 0 and last_seen_seq > 0;
+
+create table if not exists public.assistant_deliveries (
+  assistant    text   not null references public.assistants(name) on delete cascade,
+  seq          bigint not null references public.messages(seq) on delete cascade,
+  delivered_at timestamptz not null default now(),
+  primary key (assistant, seq)
+);
+alter table public.assistant_deliveries enable row level security;
+revoke all on public.assistant_deliveries from anon, authenticated;
 
 -- Thread list with counts and last activity, in one query.
 create or replace view public.thread_summaries with (security_invoker = true) as
