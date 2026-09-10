@@ -279,6 +279,11 @@ export async function postMessage(input: {
     : normalizeSpokenReply(input.body, input.spokenSummary);
   if (!body) throw new Error("Empty message");
   const addressed_to: Audience = input.addressedTo ?? (input.author === "user" ? "both" : "none");
+  // The person may keep writing in a paused conversation (delivered on
+  // resume); an assistant caught mid-reply must not post into it.
+  if (input.author !== "user" && (await isPaused(input.threadId))) {
+    throw new Error("This conversation is paused; assistants cannot post until it is resumed");
+  }
   const compare = input.kind === "compare" && (await hasRounds());
   if (compare) {
     if (!input.replyTo) throw new Error("A compare request needs reply_to");

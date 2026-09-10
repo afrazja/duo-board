@@ -38,7 +38,7 @@ function buildHandler(who: Assistant) {
         "post_message",
         {
           title: "Post a message",
-          description: `Post your reply into a thread as ${who}. Write the complete answer in Markdown in body. Set reply_to to the id of the person's message you are answering: that is how the board knows your answer is in and can release ${other}'s answer to you. A progress note that is not your answer should not set reply_to to the question. Optionally provide a short spoken_summary for Brief audio. When voice_mode is true: ${BRIEF_AUDIO_GUIDANCE} Answer only what was addressed to you or to both; when the person addressed the other assistant alone, read but do not post.`,
+          description: `Post your reply into a thread as ${who}. Write the complete answer in Markdown in body. Set reply_to to the id of the person's message you are answering: that is how the board knows your answer is in and can release ${other}'s answer to you. A progress note that is not your answer should not set reply_to to the question. Optionally provide a short spoken_summary for Brief audio. When voice_mode is true: ${BRIEF_AUDIO_GUIDANCE} Answer only what was addressed to you or to both; when the person addressed the other assistant alone, read but do not post. A paused conversation rejects assistant posts until it is resumed.`,
           inputSchema: z.object({
             thread_id: z.string().uuid(),
             body: z.string().min(1).max(20000),
