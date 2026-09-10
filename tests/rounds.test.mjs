@@ -122,6 +122,15 @@ test("An unlinked reply falls back to the latest question before it", () => {
   assert.equal(questionFor(gpt, [q1, q2, gpt])?.id, "q2");
 });
 
+test("A linked reply whose question is missing from the context is withheld, not authorised", () => {
+  seq = 0;
+  const gpt = msg("chatgpt", { replyTo: "q-not-in-context" });
+  assert.deepEqual([...withheldFrom("claude", [gpt], byThread(gpt), T0 + 60_000)], [gpt.seq]);
+  // An unlinked reply with no question at all is simply not a round.
+  const loose = msg("chatgpt");
+  assert.deepEqual([...withheldFrom("claude", [loose], byThread(loose), T0 + 60_000)], []);
+});
+
 test("Threads are independent: a reply in one thread is judged against that thread's question", () => {
   seq = 0;
   const qA = msg("user", { id: "qA", thread: "A" });

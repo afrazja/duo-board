@@ -86,8 +86,13 @@ function asMessage(row: unknown): Message {
   return { ...(r as unknown as Message), kind: (r.kind as Kind | undefined) ?? "message" };
 }
 
-/** The recent messages of a thread, as the round rules need them (any order). */
-async function roundContext(threadId: string): Promise<RoundMessage[]> {
+/**
+ * The recent messages of a thread, as the round rules need them (any order),
+ * plus any message a reply in `anchors` links to that is older than the
+ * recent window, followed through reply chains. Without this a late reply
+ * to an old question could not be judged; with it, it is judged correctly.
+ */
+async function roundContext(threadId: string, anchors: { reply_to: string | null }[] = []): Promise<RoundMessage[]> {
   const { data, error } = await db()
     .from("messages")
     .select(ROUND_COLUMNS)
@@ -95,7 +100,21 @@ async function roundContext(threadId: string): Promise<RoundMessage[]> {
     .order("seq", { ascending: false })
     .limit(ROUND_CONTEXT);
   if (error) fail(error);
-  return (data ?? []) as RoundMessage[];
+  const rows = (data ?? []) as RoundMessage[];
+  const have = new Set(rows.map((m) => m.id));
+  let wanted = anchors.map((a) => a.reply_to).filter((id): id is string => !!id && !have.has(id));
+  for (let hop = 0; hop < 4 && wanted.length; hop++) {
+    const { data: parents, error: pErr } = await db().from("messages").select(ROUND_COLUMNS).eq("thread_id", threadId).in("id", wanted);
+    if (pErr) fail(pErr);
+    const found = (parents ?? []) as RoundMessage[];
+    if (!found.length) break;
+    for (const p of found) {
+      rows.push(p);
+      have.add(p.id);
+    }
+    wanted = found.map((p) => p.reply_to).filter((id): id is string => !!id && !have.has(id));
+  }
+  return rows;
 }
 
 /**
@@ -174,7 +193,7 @@ export async function readThread(threadId: string, limit = 60, viewer?: Assistan
   if (error) fail(error);
   const rows = (data ?? []).map((row) => asMessage(row)).reverse();
   if (!viewer || !(await hasRounds())) return rows;
-  const held = withheldFrom(viewer, rows, new Map([[threadId, await roundContext(threadId)]]));
+  const held = withheldFrom(viewer, rows, new Map([[threadId, await roundContext(threadId, rows)]]));
   return rows.filter((m) => !held.has(m.seq));
 }
 
@@ -196,7 +215,7 @@ export async function findCompare(threadId: string, replyTo: string): Promise<Me
 
 /** A compare request must name a both-addressed question in its thread that both assistants have answered. */
 async function validateCompareTarget(threadId: string, questionId: string): Promise<void> {
-  const thread = await roundContext(threadId);
+  const thread = await roundContext(threadId, [{ reply_to: questionId }]);
   const q = thread.find((m) => m.id === questionId);
   if (!q || q.author !== "user" || q.addressed_to !== "both") {
     throw new Error("A compare request needs a recent question in this thread that was addressed to both");
@@ -369,7 +388,9 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   // or a compare request in the pool.
   const byThread = new Map<string, RoundMessage[]>();
   const threadIds = [...new Set(pool.filter((m) => m.author !== "user" || m.kind === "compare").map((m) => m.thread_id))];
-  for (const threadId of threadIds) byThread.set(threadId, await roundContext(threadId));
+  for (const threadId of threadIds) {
+    byThread.set(threadId, await roundContext(threadId, pool.filter((m) => m.thread_id === threadId)));
+  }
   const held = withheldFrom(assistant, pool, byThread);
 
   const out = pool.filter((m) => !held.has(m.seq)).slice(0, limit);

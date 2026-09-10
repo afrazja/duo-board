@@ -70,7 +70,13 @@ export function withheldFrom(
     if (m.author === "user" || m.author === who) continue;
     const thread = byThread.get(m.thread_id) ?? [];
     const q = questionFor(m, thread);
-    if (!q || q.addressed_to !== "both") continue;
+    if (!q) {
+      // A reply that names a question the context does not contain cannot be
+      // judged; withhold it rather than let a missing parent authorise it.
+      if (m.reply_to) held.add(m.seq);
+      continue;
+    }
+    if (q.addressed_to !== "both") continue;
     if (!hasAnswered(who, q, thread, now)) held.add(m.seq);
   }
   return held;
