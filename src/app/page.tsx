@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import type { AssistantStatus, Audience, Message, ThreadSummary } from "@/lib/board";
-import { ListenButton, useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
+import type { AssistantStatus, Audience, ThreadSummary } from "@/lib/board";
+import { useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
+
+import { Body } from "@/components/message-body";
+import { RoundReplies } from "@/components/round-replies";
+import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -13,6 +15,7 @@ import { ListenButton, useVoicePlayback, VoiceToolbar } from "@/components/voice
 
 const POLL_MS = 3000;
 const NAME: Record<string, string> = { user: "You", claude: "Claude", chatgpt: "ChatGPT" };
+const NAME_TONE: Record<string, string> = { claude: "text-orange-300", chatgpt: "text-emerald-300" };
 
 function ago(iso: string | null | undefined, now: number): string {
   if (!iso) return "never";
@@ -169,71 +172,9 @@ function useDictation(onFinal: (text: string) => void) {
   return { supported, listening, interim, problem, lang, setLang: writeLang, toggle: () => (listening ? stop() : start()) };
 }
 
-// Messages are Markdown (the assistants are told to write it), rendered with
-// GitHub-flavoured tables and lists. Headings are stepped down so a reply's
-// "# Title" never outranks the page. Paragraphs keep single newlines, so a
-// dictated message with line breaks still reads the way it was typed.
-const MD: Components = {
-  h1: ({ children }) => <h3 className="mb-1 mt-3 text-[17px] font-semibold text-zinc-50">{children}</h3>,
-  h2: ({ children }) => <h3 className="mb-1 mt-3 text-[16px] font-semibold text-zinc-50">{children}</h3>,
-  h3: ({ children }) => <h4 className="mb-1 mt-2 text-[15.5px] font-semibold text-zinc-100">{children}</h4>,
-  h4: ({ children }) => <h5 className="mb-1 mt-2 text-[15px] font-semibold text-zinc-100">{children}</h5>,
-  p: ({ children }) => <p className="whitespace-pre-wrap text-[15.5px] leading-7 text-zinc-100">{children}</p>,
-  ul: ({ children }) => <ul className="list-disc space-y-1 pl-5 text-[15.5px] leading-7 text-zinc-100">{children}</ul>,
-  ol: ({ children }) => <ol className="list-decimal space-y-1 pl-5 text-[15.5px] leading-7 text-zinc-100">{children}</ol>,
-  li: ({ children }) => <li className="pl-1">{children}</li>,
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer" className="text-indigo-300 underline underline-offset-2 hover:text-indigo-200">
-      {children}
-    </a>
-  ),
-  strong: ({ children }) => <strong className="font-semibold text-zinc-50">{children}</strong>,
-  blockquote: ({ children }) => <blockquote className="border-l-2 border-zinc-700 pl-3 text-zinc-300">{children}</blockquote>,
-  hr: () => <hr className="my-3 border-zinc-800" />,
-  pre: ({ children }) => (
-    <pre className="overflow-x-auto rounded-md bg-black/40 p-3 text-[13.5px] leading-6 [&_code]:bg-transparent [&_code]:p-0">{children}</pre>
-  ),
-  code: ({ children }) => <code className="rounded bg-black/40 px-1 py-0.5 text-[13.5px]">{children}</code>,
-  table: ({ children }) => (
-    <div className="overflow-x-auto">
-      <table className="my-2 w-full border-collapse text-[14px]">{children}</table>
-    </div>
-  ),
-  th: ({ children }) => <th className="border-b border-zinc-700 px-2 py-1.5 text-left font-semibold text-zinc-200">{children}</th>,
-  td: ({ children }) => <td className="border-b border-zinc-800 px-2 py-1.5 align-top text-zinc-200">{children}</td>,
-};
-
-function Body({ text }: { text: string }) {
-  // dir="auto" lets a Persian message align right without a language setting.
-  return (
-    <div className="space-y-2 break-words" dir="auto">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-interface Row {
-  key: string;
-  user?: Message;
-  claude: Message[];
-  chatgpt: Message[];
-}
-
-function groupRows(messages: Message[]): Row[] {
-  const rows: Row[] = [];
-  for (const m of messages) {
-    if (m.author === "user" || rows.length === 0) rows.push({ key: m.id, user: m.author === "user" ? m : undefined, claude: [], chatgpt: [] });
-    if (m.author === "claude") rows[rows.length - 1].claude.push(m);
-    if (m.author === "chatgpt") rows[rows.length - 1].chatgpt.push(m);
-  }
-  return rows;
-}
-
 // Average time from the person's message to each assistant's first reply,
 // over the rows on screen. Null until an assistant has replied to something.
-function replyStats(rows: Row[]): Record<"claude" | "chatgpt", number | null> {
+function replyStats(rows: BoardRow[]): Record<"claude" | "chatgpt", number | null> {
   const out: Record<"claude" | "chatgpt", number | null> = { claude: null, chatgpt: null };
   for (const who of ["claude", "chatgpt"] as const) {
     const deltas = rows
@@ -248,31 +189,6 @@ function replyStats(rows: Row[]): Record<"claude" | "chatgpt", number | null> {
 function AudienceBadge({ to }: { to: Audience }) {
   const label = to === "both" ? "to both" : to === "none" ? "note" : `to ${NAME[to]}`;
   return <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[12px] text-zinc-400">{label}</span>;
-}
-
-// Assistant replies sit on the plain page background; only the name carries
-// the assistant's colour, so the text stays as readable as the rest.
-const NAME_TONE: Record<string, string> = { claude: "text-orange-300", chatgpt: "text-emerald-300" };
-
-function Bubble({ m, askedAt, playback }: { m: Message; askedAt?: string; playback: ReturnType<typeof useVoicePlayback> }) {
-  // How long after the person's message this reply landed.
-  const took = askedAt ? Date.parse(m.created_at) - Date.parse(askedAt) : NaN;
-  return (
-    <div className={`rounded-xl border p-4 ${playback.state.current?.id === m.id ? "border-indigo-500/70" : "border-zinc-800"}`}>
-      <div className="mb-2 flex items-center justify-between text-[12px] text-zinc-500">
-        <span className="flex items-center gap-2">
-          <span className={`font-semibold ${NAME_TONE[m.author] ?? "text-zinc-300"}`}>{NAME[m.author]}</span>
-          {Number.isFinite(took) && took >= 0 && (
-            <span className="rounded-full border border-zinc-800 px-2 py-0.5 text-zinc-500" title="Time from your message to this reply">
-              in {spell(took)}
-            </span>
-          )}
-        </span>
-        <span className="flex items-center gap-2"><ListenButton message={m} playback={playback} /><span>{clock(m.created_at)}</span></span>
-      </div>
-      {playback.state.mode === "voice-focus" ? <details><summary className="cursor-pointer text-[13px] text-zinc-400">Show text</summary><div className="mt-2"><Body text={m.body} /></div></details> : <Body text={m.body} />}
-    </div>
-  );
 }
 
 function MicIcon({ className }: { className?: string }) {
@@ -299,7 +215,7 @@ function StatusChip({ a, now }: { a: AssistantStatus | undefined; now: number })
 export default function BoardPage() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<BoardMessage[]>([]);
   const [assistants, setAssistants] = useState<AssistantStatus[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState("");
@@ -310,6 +226,10 @@ export default function BoardPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [savingBrief, setSavingBrief] = useState(false);
+  const [comparing, setComparing] = useState<string[]>([]);
+  const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
+  const compareRequests = useRef(new Set<string>());
+  const loaded = useRef<{ threadId: string | null; messages: BoardMessage[] }>({ threadId: null, messages: [] });
   const briefSaveVersion = useRef(0);
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
@@ -318,6 +238,16 @@ export default function BoardPage() {
   const briefAudio = threads.find((thread) => thread.id === activeId)?.brief_audio ?? false;
   const playback = useVoicePlayback(activeId, dictation.listening, briefAudio);
   const speechPlayer = playback.player;
+
+  const acceptMessages = useCallback((threadId: string, incoming: BoardMessage[], serverNow?: string) => {
+    if (loaded.current.threadId !== threadId) return;
+    const next = mergeMessages(loaded.current.messages, incoming);
+    loaded.current.messages = next;
+    // Unrevealed text never enters the audio queue. Previously held answers
+    // become eligible together when the second assistant's answer arrives.
+    speechPlayer.ingest(playableMessages(groupRows(next), serverNow ? Date.parse(serverNow) : Date.now()), serverNow);
+    setMessages(next);
+  }, [speechPlayer]);
 
   const loadThreads = useCallback(async () => {
     const res = await fetch("/api/threads");
@@ -350,9 +280,13 @@ export default function BoardPage() {
   useEffect(() => {
     if (!activeId) return;
     let stopped = false;
+    let polling = false;
     lastSeq.current = 0;
+    loaded.current = { threadId: activeId, messages: [] };
     setMessages([]);
     const poll = async () => {
+      if (polling) return;
+      polling = true;
       try {
         const versionAtPoll = briefSaveVersion.current;
         const res = await fetch(`/api/messages?thread=${activeId}&after=${lastSeq.current}`);
@@ -360,7 +294,7 @@ export default function BoardPage() {
           location.href = "/login";
           return;
         }
-        const data = (await res.json()) as { messages?: Message[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean };
+        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean };
         if (stopped) return;
         if (data.error) {
           setError(data.error);
@@ -373,16 +307,12 @@ export default function BoardPage() {
           setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.brief_audio !== data.brief_audio ? { ...thread, brief_audio: data.brief_audio! } : thread));
         }
         if (data.messages && data.messages.length) {
-          speechPlayer.ingest(data.messages, data.now);
-          lastSeq.current = data.messages[data.messages.length - 1].seq;
-          setMessages((prev) => {
-            const seen = new Set(prev.map((m) => m.id));
-            return [...prev, ...data.messages!.filter((m) => !seen.has(m.id))];
-          });
+          acceptMessages(activeId, data.messages, data.now);
+          lastSeq.current = Math.max(lastSeq.current, ...data.messages.map((message) => message.seq));
         }
       } catch (e) {
         if (!stopped) setError((e as Error).message);
-      }
+      } finally { polling = false; }
     };
     void poll();
     const t = setInterval(poll, POLL_MS);
@@ -390,7 +320,7 @@ export default function BoardPage() {
       stopped = true;
       clearInterval(t);
     };
-  }, [activeId, speechPlayer]);
+  }, [activeId, speechPlayer, acceptMessages]);
 
   // Follow the conversation unless the reader has scrolled up.
   useEffect(() => {
@@ -404,6 +334,7 @@ export default function BoardPage() {
     e?.preventDefault();
     const body = draft.trim();
     if (!body || !activeId || sending) return;
+    const threadId = activeId;
     setSending(true);
     try {
       const res = await fetch("/api/messages", {
@@ -411,14 +342,38 @@ export default function BoardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ thread_id: activeId, body, addressed_to: audience }),
       });
-      const data = (await res.json()) as { message?: Message; error?: string };
+      const data = (await res.json()) as { message?: BoardMessage; error?: string };
       if (data.message) {
-        setMessages((prev) => (prev.some((m) => m.id === data.message!.id) ? prev : [...prev, data.message!]));
-        lastSeq.current = Math.max(lastSeq.current, data.message.seq);
-        setDraft("");
+        acceptMessages(threadId, [data.message]);
+        // Only polling advances its cursor: a simultaneous assistant reply
+        // can precede this POST response and must still be fetched.
+        if (loaded.current.threadId === threadId) setDraft("");
       } else setError(data.error ?? "Could not send");
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function compareAnswers(question: BoardMessage) {
+    if (compareRequests.current.has(question.id)) return;
+    compareRequests.current.add(question.id);
+    setComparing((current) => [...current, question.id]);
+    setCompareErrors((current) => ({ ...current, [question.id]: "" }));
+    try {
+      const res = await fetch("/api/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: question.thread_id, kind: "compare", reply_to: question.id, addressed_to: "both", body: "Compare your answers to the linked question. Each give one short follow-up: what you agree with, what you challenge and why, and what changed your mind. If you still agree, say so; do not invent disagreement." }),
+      });
+      const data = await res.json() as { message?: BoardMessage; error?: string };
+      if (!res.ok || !data.message) throw new Error(data.error ?? "Could not request a comparison.");
+      acceptMessages(question.thread_id, [data.message]);
+    } catch (e) {
+      setCompareErrors((current) => ({ ...current, [question.id]: (e as Error).message }));
+    } finally {
+      compareRequests.current.delete(question.id);
+      setComparing((current) => current.filter((id) => id !== question.id));
     }
   }
 
@@ -460,7 +415,6 @@ export default function BoardPage() {
   const rows = groupRows(messages);
   const active = threads.find((t) => t.id === activeId);
   const status = (name: "claude" | "chatgpt") => assistants.find((a) => a.name === name);
-  const lastRow = rows[rows.length - 1];
   const stats = replyStats(rows);
 
   return (
@@ -551,7 +505,7 @@ export default function BoardPage() {
 
         <VoiceToolbar playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
-        <div className="hidden grid-cols-2 border-b border-zinc-800 text-center text-[12px] uppercase tracking-wide text-zinc-500 md:grid">
+        <div className="hidden grid-cols-2 border-b border-zinc-800 text-center text-[12px] uppercase tracking-wide text-zinc-500 lg:grid">
           <div className="py-1.5">Claude</div>
           <div className="border-l border-zinc-800 py-1.5">ChatGPT</div>
         </div>
@@ -569,28 +523,7 @@ export default function BoardPage() {
                   <Body text={row.user.body} />
                 </div>
               )}
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {(["claude", "chatgpt"] as const).map((who) => {
-                  const list = row[who];
-                  const expected = row.user && (row.user.addressed_to === "both" || row.user.addressed_to === who);
-                  const waiting = expected && list.length === 0 && row === lastRow;
-                  // "Working" once the assistant's read cursor has covered this message and it has not posted since.
-                  const a = status(who);
-                  const working = !!a && a.working_on_seq != null && !!row.user && a.working_on_seq >= row.user.seq;
-                  return (
-                    <div key={who} className="min-w-0 space-y-3">
-                      {list.map((m) => <Bubble key={m.id} m={m} askedAt={row.user?.created_at} playback={playback} />)}
-                      {waiting && (
-                        <p className={`rounded-xl border border-dashed p-4 text-[13px] ${working ? "border-zinc-700 text-zinc-400" : "border-zinc-800 text-zinc-500"}`}>
-                          {working
-                            ? `${NAME[who]} read this ${ago(a?.last_checked_at, now)} and is working on it…`
-                            : `Waiting for ${NAME[who]}… last checked ${ago(a?.last_checked_at, now)}`}
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} comparing={comparing.includes(row.key)} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
             </section>
           ))}
         </div>
