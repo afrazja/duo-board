@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import type { AssistantStatus, Audience, Message, ThreadSummary } from "@/lib/board";
+import { ListenButton, useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -204,14 +205,14 @@ function AudienceBadge({ to }: { to: Audience }) {
 // the assistant's colour, so the text stays as readable as the rest.
 const NAME_TONE: Record<string, string> = { claude: "text-orange-300", chatgpt: "text-emerald-300" };
 
-function Bubble({ m }: { m: Message }) {
+function Bubble({ m, playback }: { m: Message; playback: ReturnType<typeof useVoicePlayback> }) {
   return (
-    <div className="rounded-xl border border-zinc-800 p-4">
+    <div className={`rounded-xl border p-4 ${playback.state.current?.id === m.id ? "border-indigo-500/70" : "border-zinc-800"}`}>
       <div className="mb-2 flex items-center justify-between text-[12px] text-zinc-500">
         <span className={`font-semibold ${NAME_TONE[m.author] ?? "text-zinc-300"}`}>{NAME[m.author]}</span>
-        <span>{clock(m.created_at)}</span>
+        <span className="flex items-center gap-2"><ListenButton message={m} playback={playback} /><span>{clock(m.created_at)}</span></span>
       </div>
-      <Body text={m.body} />
+      {playback.state.mode === "voice-focus" ? <details><summary className="cursor-pointer text-[13px] text-zinc-400">Show text</summary><div className="mt-2"><Body text={m.body} /></div></details> : <Body text={m.body} />}
     </div>
   );
 }
@@ -254,6 +255,8 @@ export default function BoardPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
   const dictation = useDictation(appendToDraft);
+  const playback = useVoicePlayback(activeId, dictation.listening);
+  const speechPlayer = playback.player;
 
   const loadThreads = useCallback(async () => {
     const res = await fetch("/api/threads");
@@ -295,7 +298,7 @@ export default function BoardPage() {
           location.href = "/login";
           return;
         }
-        const data = (await res.json()) as { messages?: Message[]; assistants?: AssistantStatus[]; error?: string };
+        const data = (await res.json()) as { messages?: Message[]; assistants?: AssistantStatus[]; error?: string; now?: string };
         if (stopped) return;
         if (data.error) {
           setError(data.error);
@@ -304,6 +307,7 @@ export default function BoardPage() {
         setError("");
         if (data.assistants) setAssistants(data.assistants);
         if (data.messages && data.messages.length) {
+          speechPlayer.ingest(data.messages, data.now);
           lastSeq.current = data.messages[data.messages.length - 1].seq;
           setMessages((prev) => {
             const seen = new Set(prev.map((m) => m.id));
@@ -320,7 +324,7 @@ export default function BoardPage() {
       stopped = true;
       clearInterval(t);
     };
-  }, [activeId]);
+  }, [activeId, speechPlayer]);
 
   // Follow the conversation unless the reader has scrolled up.
   useEffect(() => {
@@ -454,6 +458,8 @@ export default function BoardPage() {
           {error && <span className="text-[12px] text-rose-400">{error}</span>}
         </header>
 
+        <VoiceToolbar playback={playback} />
+
         <div className="hidden grid-cols-2 border-b border-zinc-800 text-center text-[12px] uppercase tracking-wide text-zinc-500 md:grid">
           <div className="py-1.5">Claude</div>
           <div className="border-l border-zinc-800 py-1.5">ChatGPT</div>
@@ -479,7 +485,7 @@ export default function BoardPage() {
                   const waiting = expected && list.length === 0 && row === lastRow;
                   return (
                     <div key={who} className="min-w-0 space-y-3">
-                      {list.map((m) => <Bubble key={m.id} m={m} />)}
+                      {list.map((m) => <Bubble key={m.id} m={m} playback={playback} />)}
                       {waiting && <p className="rounded-xl border border-dashed border-zinc-800 p-4 text-[13px] text-zinc-500">Waiting for {NAME[who]}…</p>}
                     </div>
                   );

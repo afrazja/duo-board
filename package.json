@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:voice": "node --experimental-strip-types --test tests/speech-playback.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
