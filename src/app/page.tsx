@@ -163,12 +163,12 @@ function Body({ text }: { text: string }) {
     <div className="space-y-2">
       {parts.map((p, i) =>
         i % 2 === 1 ? (
-          <pre key={i} className="overflow-x-auto rounded-md bg-black/40 p-3 text-[12.5px] leading-5">
+          <pre key={i} className="overflow-x-auto rounded-md bg-black/40 p-3 text-[13.5px] leading-6">
             {p.replace(/^[a-z]*\n/, "")}
           </pre>
         ) : (
           p.trim() && (
-            <p key={i} className="whitespace-pre-wrap text-[14px] leading-6">
+            <p key={i} className="whitespace-pre-wrap text-[15.5px] leading-7 text-zinc-100">
               {p.trim()}
             </p>
           )
@@ -197,19 +197,32 @@ function groupRows(messages: Message[]): Row[] {
 
 function AudienceBadge({ to }: { to: Audience }) {
   const label = to === "both" ? "to both" : to === "none" ? "note" : `to ${NAME[to]}`;
-  return <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400">{label}</span>;
+  return <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[12px] text-zinc-400">{label}</span>;
 }
 
+// Assistant replies sit on the plain page background; only the name carries
+// the assistant's colour, so the text stays as readable as the rest.
+const NAME_TONE: Record<string, string> = { claude: "text-orange-300", chatgpt: "text-emerald-300" };
+
 function Bubble({ m }: { m: Message }) {
-  const tone = m.author === "claude" ? "border-orange-900/60 bg-orange-950/30" : "border-emerald-900/60 bg-emerald-950/30";
   return (
-    <div className={`rounded-xl border p-3 ${tone}`}>
-      <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
-        <span className="font-medium text-zinc-300">{NAME[m.author]}</span>
+    <div className="rounded-xl border border-zinc-800 p-4">
+      <div className="mb-2 flex items-center justify-between text-[12px] text-zinc-500">
+        <span className={`font-semibold ${NAME_TONE[m.author] ?? "text-zinc-300"}`}>{NAME[m.author]}</span>
         <span>{clock(m.created_at)}</span>
       </div>
       <Body text={m.body} />
     </div>
+  );
+}
+
+function MicIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </svg>
   );
 }
 
@@ -233,6 +246,8 @@ export default function BoardPage() {
   const [draft, setDraft] = useState("");
   const [audience, setAudience] = useState<Audience>("both");
   const [newTitle, setNewTitle] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const lastSeq = useRef(0);
@@ -347,7 +362,14 @@ export default function BoardPage() {
       setThreads((prev) => [data.thread!, ...prev]);
       setActiveId(data.thread.id);
       setNewTitle("");
-    } else setError(data.error ?? "Could not create thread");
+      setCreating(false);
+      setNavOpen(false);
+    } else setError(data.error ?? "Could not create conversation");
+  }
+
+  function pickThread(id: string) {
+    setActiveId(id);
+    setNavOpen(false);
   }
 
   const rows = groupRows(messages);
@@ -357,35 +379,74 @@ export default function BoardPage() {
 
   return (
     <div className="flex h-screen">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/60">
-        <div className="border-b border-zinc-800 px-4 py-3 text-sm font-semibold">Duo Board</div>
-        <nav className="flex-1 overflow-y-auto p-2">
+      {navOpen && <button type="button" aria-label="Close conversations" onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/60 md:hidden" />}
+      <aside
+        className={`fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 transition-transform md:static md:z-auto md:translate-x-0 md:bg-zinc-900/60 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
+      >
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+          <span className="text-[15px] font-semibold">Duo Board</span>
+          <button type="button" onClick={() => setNavOpen(false)} className="text-zinc-500 hover:text-zinc-200 md:hidden" aria-label="Close">
+            ✕
+          </button>
+        </div>
+        <div className="p-2">
+          {creating ? (
+            <form onSubmit={createThread} className="space-y-2">
+              <input
+                autoFocus
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setCreating(false);
+                }}
+                placeholder="Name it, e.g. Website redesign"
+                aria-label="Conversation name"
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-[14px] outline-none focus:border-indigo-500"
+              />
+              <div className="flex gap-2">
+                <button type="submit" disabled={!newTitle.trim()} className="flex-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50">
+                  Create
+                </button>
+                <button type="button" onClick={() => setCreating(false)} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-[13px] text-zinc-400 hover:text-zinc-200">
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-zinc-700 px-3 py-2 text-[14px] text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+            >
+              <span className="text-lg leading-none" aria-hidden>+</span> New conversation
+            </button>
+          )}
+        </div>
+        <nav className="flex-1 overflow-y-auto px-2 pb-2">
+          <p className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-zinc-600">Conversations</p>
           {threads.map((t) => (
             <button
               key={t.id}
               type="button"
-              onClick={() => setActiveId(t.id)}
-              className={`mb-1 block w-full rounded-lg px-3 py-2 text-left text-sm ${t.id === activeId ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/60"}`}
+              onClick={() => pickThread(t.id)}
+              className={`mb-1 block w-full rounded-lg px-3 py-2 text-left ${t.id === activeId ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/60"}`}
             >
-              <span className="block truncate">{t.title}</span>
-              <span className="text-[11px] text-zinc-500">{t.message_count} messages</span>
+              <span className="block truncate text-[14.5px]">{t.title}</span>
+              <span className="text-[12px] text-zinc-500">
+                {t.message_count} {t.message_count === 1 ? "message" : "messages"}
+                {t.last_message_at ? ` · ${ago(t.last_message_at, now)}` : ""}
+              </span>
             </button>
           ))}
         </nav>
-        <form onSubmit={createThread} className="border-t border-zinc-800 p-2">
-          <input
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="New thread title…"
-            aria-label="New thread title"
-            className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-indigo-500"
-          />
-        </form>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-zinc-800 px-5 py-3">
-          <h1 className="text-sm font-semibold">{active?.title ?? "…"}</h1>
+        <header className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-zinc-800 px-4 py-3 md:px-5">
+          <button type="button" onClick={() => setNavOpen(true)} className="rounded-md border border-zinc-700 px-2 py-1 text-[13px] text-zinc-300 md:hidden" aria-label="Open conversations">
+            ☰
+          </button>
+          <h1 className="text-[15px] font-semibold">{active?.title ?? "…"}</h1>
           <div className="flex flex-wrap gap-x-5">
             <span className="flex items-center gap-2 text-[12px]"><span className="font-medium text-orange-300">Claude</span><StatusChip a={status("claude")} now={now} /></span>
             <span className="flex items-center gap-2 text-[12px]"><span className="font-medium text-emerald-300">ChatGPT</span><StatusChip a={status("chatgpt")} now={now} /></span>
@@ -393,25 +454,25 @@ export default function BoardPage() {
           {error && <span className="text-[12px] text-rose-400">{error}</span>}
         </header>
 
-        <div className="grid grid-cols-2 border-b border-zinc-800 text-center text-[11px] uppercase tracking-wide text-zinc-500">
+        <div className="hidden grid-cols-2 border-b border-zinc-800 text-center text-[12px] uppercase tracking-wide text-zinc-500 md:grid">
           <div className="py-1.5">Claude</div>
           <div className="border-l border-zinc-800 py-1.5">ChatGPT</div>
         </div>
 
         <div ref={scroller} className="flex-1 overflow-y-auto px-5 py-4">
-          {rows.length === 0 && <p className="py-20 text-center text-sm text-zinc-500">Nothing here yet. Write below and address one or both.</p>}
+          {rows.length === 0 && <p className="py-20 text-center text-[15px] text-zinc-500">Nothing here yet. Write below and address one or both.</p>}
           {rows.map((row) => (
-            <section key={row.key} className="mb-6">
+            <section key={row.key} className="mb-8">
               {row.user && (
-                <div className="mb-3 rounded-xl border border-indigo-900/60 bg-indigo-950/30 p-3">
-                  <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-500">
-                    <span className="flex items-center gap-2"><span className="font-medium text-zinc-300">You</span><AudienceBadge to={row.user.addressed_to} /></span>
+                <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
+                  <div className="mb-2 flex items-center justify-between text-[12px] text-zinc-500">
+                    <span className="flex items-center gap-2"><span className="font-semibold text-indigo-300">You</span><AudienceBadge to={row.user.addressed_to} /></span>
                     <span>{clock(row.user.created_at)}</span>
                   </div>
                   <Body text={row.user.body} />
                 </div>
               )}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {(["claude", "chatgpt"] as const).map((who) => {
                   const list = row[who];
                   const expected = row.user && (row.user.addressed_to === "both" || row.user.addressed_to === who);
@@ -419,7 +480,7 @@ export default function BoardPage() {
                   return (
                     <div key={who} className="min-w-0 space-y-3">
                       {list.map((m) => <Bubble key={m.id} m={m} />)}
-                      {waiting && <p className="rounded-xl border border-dashed border-zinc-800 p-3 text-[12px] text-zinc-500">Waiting for {NAME[who]}…</p>}
+                      {waiting && <p className="rounded-xl border border-dashed border-zinc-800 p-4 text-[13px] text-zinc-500">Waiting for {NAME[who]}…</p>}
                     </div>
                   );
                 })}
@@ -438,56 +499,59 @@ export default function BoardPage() {
             rows={3}
             placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write to the board… (Ctrl+Enter to send)"}
             aria-label="Message"
-            className={`mb-2 w-full resize-y rounded-lg border bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-indigo-500 ${dictation.listening ? "border-rose-700" : "border-zinc-700"}`}
+            className={`mb-2 w-full resize-y rounded-lg border bg-zinc-950 px-3 py-2 text-[15px] leading-6 outline-none focus:border-indigo-500 ${dictation.listening ? "border-rose-700" : "border-zinc-700"}`}
           />
-          {dictation.interim && <p className="mb-2 px-1 text-[13px] italic text-zinc-500">{dictation.interim}…</p>}
+          {dictation.interim && <p className="mb-2 px-1 text-[14px] italic text-zinc-500">{dictation.interim}…</p>}
           {dictation.problem && <p className="mb-2 px-1 text-[12px] text-rose-400">{dictation.problem}</p>}
           <div className="flex flex-wrap items-center gap-2">
-            {dictation.supported && (
-              <>
-                <button
-                  type="button"
-                  onClick={dictation.toggle}
-                  aria-pressed={dictation.listening}
-                  className={`flex items-center gap-2 rounded-full border px-3 py-1 text-[12px] ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
-                >
-                  <span className={`h-2 w-2 rounded-full ${dictation.listening ? "animate-pulse bg-rose-400" : "bg-zinc-600"}`} aria-hidden />
-                  {dictation.listening ? "Stop" : "Dictate"}
-                </button>
-                <select
-                  value={dictation.lang}
-                  onChange={(e) => dictation.setLang(e.target.value)}
-                  disabled={dictation.listening}
-                  aria-label="Dictation language"
-                  className="rounded-full border border-zinc-700 bg-zinc-950 px-2 py-1 text-[12px] text-zinc-400 outline-none disabled:opacity-50"
-                >
-                  {LANGS.map(([code, label]) => (
-                    <option key={code} value={code}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-                <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden />
-              </>
-            )}
             <span className="text-[12px] text-zinc-500">To:</span>
             {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => (
               <button
                 key={a}
                 type="button"
                 onClick={() => setAudience(a)}
-                className={`rounded-full border px-3 py-1 text-[12px] ${audience === a ? "border-indigo-500 bg-indigo-600/20 text-indigo-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
+                className={`rounded-full border px-3 py-1 text-[13px] ${audience === a ? "border-indigo-500 bg-indigo-600/20 text-indigo-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
               >
                 {a === "both" ? "Both" : a === "none" ? "Note only" : NAME[a]}
               </button>
             ))}
-            <button
-              type="submit"
-              disabled={sending || !draft.trim()}
-              className="ml-auto rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-            >
-              {sending ? "Sending…" : "Send"}
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              {dictation.supported && (
+                <>
+                  <select
+                    value={dictation.lang}
+                    onChange={(e) => dictation.setLang(e.target.value)}
+                    disabled={dictation.listening}
+                    aria-label="Dictation language"
+                    title="Dictation language"
+                    className="rounded-md border border-zinc-800 bg-zinc-950 px-1.5 py-1 text-[12px] text-zinc-500 outline-none hover:text-zinc-300 disabled:opacity-50"
+                  >
+                    {LANGS.map(([code, label]) => (
+                      <option key={code} value={code}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={dictation.toggle}
+                    aria-pressed={dictation.listening}
+                    aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
+                    title={dictation.listening ? "Stop dictation" : "Dictate"}
+                    className={`flex h-9 w-9 items-center justify-center rounded-lg border ${dictation.listening ? "animate-pulse border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-100"}`}
+                  >
+                    <MicIcon />
+                  </button>
+                </>
+              )}
+              <button
+                type="submit"
+                disabled={sending || !draft.trim()}
+                className="h-9 rounded-lg bg-indigo-600 px-4 text-[14px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {sending ? "Sending…" : "Send"}
+              </button>
+            </div>
           </div>
         </form>
       </main>
