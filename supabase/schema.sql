@@ -39,6 +39,12 @@ create table if not exists public.assistants (
 insert into public.assistants (name) values ('claude'), ('chatgpt')
 on conflict (name) do nothing;
 
+-- The seq of the latest message addressed to the assistant that it has read
+-- but not yet answered. read_new sets it, posting clears it, and the page
+-- turns it into "read this 2m ago, working" instead of a blank wait.
+-- Additive: existing installs run just this line.
+alter table public.assistants add column if not exists working_on_seq bigint;
+
 -- Thread list with counts and last activity, in one query.
 create or replace view public.thread_summaries with (security_invoker = true) as
 select t.id, t.title, t.archived, t.created_at,
