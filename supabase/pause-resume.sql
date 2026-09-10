@@ -18,3 +18,24 @@ left join public.messages m on m.thread_id = t.id
 group by t.id;
 
 notify pgrst, 'reload schema';
+
+-- Serialize assistant inserts with Pause so no late reply can land after the
+-- preference update commits. User messages may queue normally while paused.
+create or replace function public.guard_paused_assistant_post()
+returns trigger language plpgsql set search_path = '' as $$
+declare conversation_paused boolean;
+begin
+  if new.author <> 'user' then
+    select t.paused into conversation_paused from public.threads t
+      where t.id = new.thread_id for share;
+    if conversation_paused then
+      raise exception 'Conversation is paused. Keep this reply pending until the person resumes it.';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.guard_paused_assistant_post() from public, anon, authenticated;
+create or replace trigger messages_guard_paused_assistant_post
+  before insert on public.messages
+  for each row execute function public.guard_paused_assistant_post();

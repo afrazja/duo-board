@@ -196,8 +196,8 @@ export async function getThreadPreferences(threadId: string) {
 
 /** Whether a conversation is paused. A database without the column answers false. */
 async function isPaused(threadId: string): Promise<boolean> {
-  const { data, error } = await db().from("threads").select("paused").eq("id", threadId).maybeSingle();
-  if (error) return false;
+  const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
+  if (error) fail(error);
   return (data as { paused?: boolean } | null)?.paused === true;
 }
 

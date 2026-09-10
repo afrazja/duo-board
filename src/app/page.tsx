@@ -228,12 +228,15 @@ export default function BoardPage() {
   const [savingBrief, setSavingBrief] = useState(false);
   const [savingAnswerMode, setSavingAnswerMode] = useState(false);
   const [answerModeError, setAnswerModeError] = useState("");
+  const [savingPause, setSavingPause] = useState(false);
+  const [pauseError, setPauseError] = useState("");
   const [comparing, setComparing] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
   const compareRequests = useRef(new Set<string>());
   const loaded = useRef<{ threadId: string | null; messages: BoardMessage[] }>({ threadId: null, messages: [] });
   const briefSaveVersion = useRef(0);
   const answerModeSaveVersion = useRef(0);
+  const pauseSaveVersion = useRef(0);
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
@@ -293,12 +296,13 @@ export default function BoardPage() {
       try {
         const versionAtPoll = briefSaveVersion.current;
         const answerVersionAtPoll = answerModeSaveVersion.current;
+        const pauseVersionAtPoll = pauseSaveVersion.current;
         const res = await fetch(`/api/messages?thread=${activeId}&after=${lastSeq.current}`);
         if (res.status === 401) {
           location.href = "/login";
           return;
         }
-        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean; blind_first_round?: boolean };
+        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean };
         if (stopped) return;
         if (data.error) {
           setError(data.error);
@@ -316,6 +320,9 @@ export default function BoardPage() {
         }
         if (typeof data.blind_first_round === "boolean" && answerVersionAtPoll % 2 === 0 && answerVersionAtPoll === answerModeSaveVersion.current) {
           setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.blind_first_round !== data.blind_first_round ? { ...thread, blind_first_round: data.blind_first_round! } : thread));
+        }
+        if (typeof data.paused === "boolean" && pauseVersionAtPoll % 2 === 0 && pauseVersionAtPoll === pauseSaveVersion.current) {
+          setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.paused !== data.paused ? { ...thread, paused: data.paused! } : thread));
         }
       } catch (e) {
         if (!stopped) setError((e as Error).message);
@@ -365,6 +372,7 @@ export default function BoardPage() {
   }
 
   async function compareAnswers(question: BoardMessage) {
+    if (threads.find((thread) => thread.id === question.thread_id)?.paused || savingPause) return;
     if (compareRequests.current.has(question.id)) return;
     compareRequests.current.add(question.id);
     setComparing((current) => [...current, question.id]);
@@ -402,6 +410,7 @@ export default function BoardPage() {
 
   function pickThread(id: string) {
     setAnswerModeError("");
+    setPauseError("");
     setActiveId(id);
     setNavOpen(false);
   }
@@ -435,6 +444,21 @@ export default function BoardPage() {
       setThreads((prev) => prev.map((thread) => thread.id === threadId ? { ...thread, blind_first_round: data.thread!.blind_first_round } : thread));
     } catch (e) { if (loaded.current.threadId === threadId) setAnswerModeError((e as Error).message); }
     finally { answerModeSaveVersion.current += 1; setSavingAnswerMode(false); }
+  }
+
+  async function changePaused(paused: boolean) {
+    if (!activeId || pauseSaveVersion.current % 2 !== 0) return;
+    const threadId = activeId;
+    pauseSaveVersion.current += 1;
+    setSavingPause(true);
+    setPauseError("");
+    try {
+      const res = await fetch("/api/threads", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: threadId, paused }) });
+      const data = await res.json() as { thread?: { paused: boolean }; error?: string };
+      if (!res.ok || typeof data.thread?.paused !== "boolean") throw new Error(data.error ?? "Could not save conversation status");
+      setThreads((prev) => prev.map((thread) => thread.id === threadId ? { ...thread, paused: data.thread!.paused } : thread));
+    } catch (e) { if (loaded.current.threadId === threadId) setPauseError((e as Error).message); }
+    finally { pauseSaveVersion.current += 1; setSavingPause(false); }
   }
 
   const active = threads.find((t) => t.id === activeId);
@@ -496,6 +520,7 @@ export default function BoardPage() {
               className={`mb-1 block w-full rounded-lg px-3 py-2 text-left ${t.id === activeId ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/60"}`}
             >
               <span className="block truncate text-[14.5px]">{t.title}</span>
+              {t.paused && <span className="text-[11px] font-medium text-amber-300">Paused · </span>}
               <span className="text-[12px] text-zinc-500">
                 {t.message_count} {t.message_count === 1 ? "message" : "messages"}
                 {t.last_message_at ? ` · ${ago(t.last_message_at, now)}` : ""}
@@ -511,6 +536,9 @@ export default function BoardPage() {
             ☰
           </button>
           <h1 className="text-[15px] font-semibold">{active?.title ?? "…"}</h1>
+          <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`rounded-lg border px-3 py-1.5 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
+            {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
+          </button>
           <div className="flex flex-wrap gap-x-5">
             {(["claude", "chatgpt"] as const).map((who) => (
               <span key={who} className="flex items-center gap-2 text-[12px]">
@@ -525,7 +553,10 @@ export default function BoardPage() {
             ))}
           </div>
           {error && <span className="text-[12px] text-rose-400">{error}</span>}
+          {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
         </header>
+
+        {active?.paused && <div role="status" className="border-b border-amber-500/20 bg-amber-500/5 px-5 py-3 text-[13px] leading-6 text-amber-200"><strong>Conversation paused.</strong> Assistant checks and replies are on hold. You can leave messages here; Resume continues the same sessions with their history.</div>}
 
         <VoiceToolbar playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
@@ -547,7 +578,7 @@ export default function BoardPage() {
                   <Body text={row.user.body} />
                 </div>
               )}
-              <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} comparing={comparing.includes(row.key)} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+              <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
             </section>
           ))}
         </div>
@@ -622,7 +653,7 @@ export default function BoardPage() {
                 disabled={sending || savingAnswerMode || !draft.trim()}
                 className="h-9 rounded-lg bg-indigo-600 px-4 text-[14px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
               >
-                {sending ? "Sending…" : "Send"}
+                {sending ? "Sending…" : active?.paused ? "Queue message" : "Send"}
               </button>
             </div>
           </div>
