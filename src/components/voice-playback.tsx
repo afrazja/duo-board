@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { chooseVoice, SpeechPlayback, type Speaker, type SpokenMessage, type VoiceMode } from "@/lib/speech-playback";
+import { chooseVoicePair, SpeechPlayback, type Speaker, type SpokenMessage, type VoiceMode } from "@/lib/speech-playback";
 
-const NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
+const NAMES = { claude: "Claude", chatgpt: "ChatGPT", system: "Duo Board" };
 const CONTROL = "rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-[13px] text-zinc-300 hover:border-zinc-500 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-40";
 
-export function useVoicePlayback(threadId: string | null, microphoneActive: boolean) {
+export function useVoicePlayback(threadId: string | null, microphoneActive: boolean, brief: boolean) {
   const [player] = useState(() => new SpeechPlayback());
   const state = useSyncExternalStore(player.subscribe, player.getSnapshot, player.getSnapshot);
   useEffect(() => {
@@ -17,14 +17,18 @@ export function useVoicePlayback(threadId: string | null, microphoneActive: bool
   }, [player]);
   useEffect(() => { player.setThread(threadId); }, [player, threadId]);
   useEffect(() => { player.setMicrophoneActive(microphoneActive); }, [player, microphoneActive]);
+  useEffect(() => { player.setBrief(brief); }, [player, brief]);
   return { player, state };
 }
 
-export function VoiceToolbar({ playback }: { playback: ReturnType<typeof useVoicePlayback> }) {
+export function VoiceToolbar({ playback, savingBrief, canSetBrief, onBriefChange }: { playback: ReturnType<typeof useVoicePlayback>; savingBrief: boolean; canSetBrief: boolean; onBriefChange: (brief: boolean) => void }) {
   const { player, state } = playback;
   const ready = state.supported && state.voices.length > 0;
+  const pair = chooseVoicePair(state.voices, state, "Hello");
+  const sameVoice = pair.claude && pair.chatgpt && pair.claude.voiceURI === pair.chatgpt.voiceURI;
+  const kindLabel = state.current?.kind === "brief" ? " · brief summary" : state.current?.kind === "excerpt" ? " · opening excerpt" : "";
   const status = state.microphoneActive ? "Paused while your microphone is on"
-    : state.current ? `${state.paused ? "Paused" : "Speaking"}: ${NAMES[state.current.author]}${state.queued ? ` · ${state.queued} queued` : ""}`
+    : state.current ? `${state.paused ? "Paused" : "Speaking"}: ${NAMES[state.current.author]}${kindLabel}${state.queued ? ` · ${state.queued} queued` : ""}`
     : state.enabled ? "Listening for new replies" : state.mode === "text" ? "Read replies at your own pace" : "Press Start listening for new replies";
   return (
     <div className="shrink-0 border-b border-zinc-800 bg-zinc-900/40 px-4 py-2.5 md:px-5">
@@ -36,6 +40,10 @@ export function VoiceToolbar({ playback }: { playback: ReturnType<typeof useVoic
             <option value="voice-text" disabled={!ready || state.microphoneActive}>Voice + text</option>
             <option value="voice-focus" disabled={!ready || state.microphoneActive}>Voice focus</option>
           </select>
+        </label>
+        <label title="Saved for this conversation and shared with both assistants" className="flex items-center gap-1.5 text-[12px] text-zinc-300">
+          <input type="checkbox" checked={state.brief} disabled={savingBrief || !canSetBrief} onChange={(e) => onBriefChange(e.target.checked)} className="accent-indigo-500" />
+          {savingBrief ? "Saving…" : "Brief audio"}
         </label>
         {state.mode !== "text" && !state.enabled && <button type="button" onClick={() => player.enable()} disabled={!ready || state.microphoneActive} className={CONTROL}>Start listening</button>}
         {state.current && <>
@@ -49,7 +57,7 @@ export function VoiceToolbar({ playback }: { playback: ReturnType<typeof useVoic
           <div className="mt-2 grid max-w-full gap-3 rounded-lg border border-zinc-700 bg-zinc-900 p-3 sm:grid-cols-2">
             {(["claude", "chatgpt"] as const).map((speaker) => {
               const preferred = state[speaker];
-              const automatic = chooseVoice(state.voices, speaker, "", "Hello");
+              const automatic = chooseVoicePair(state.voices, { ...state, [speaker]: "" }, "Hello")[speaker];
               return <div key={speaker} className="min-w-0 space-y-2">
                 <label className="block text-[12px] text-zinc-300">
                   {NAMES[speaker]}&apos;s voice
@@ -68,12 +76,14 @@ export function VoiceToolbar({ playback }: { playback: ReturnType<typeof useVoic
               </select>
             </label>
             <p className="text-[12px] leading-5 text-zinc-400 sm:col-span-2">Automatic selection prefers a feminine voice for Claude and a masculine voice for ChatGPT when recognised voices are available. Preview and choose the voices you like. Online voices may use your browser&apos;s speech service. Replay a reply to hear new settings.</p>
+            {sameVoice && <p className="text-[12px] leading-5 text-amber-300 sm:col-span-2">{state.voices.filter((v) => v.lang.toLowerCase().startsWith("en")).length < 2 ? "Only one suitable English voice is available; both assistants use it." : "Both assistants currently use the same voice. Choose a different voice above if you want to distinguish them."}</p>}
           </div>
         </details>
       </div>
       {!state.supported && <p className="mt-2 text-[12px] text-zinc-400">Read-aloud is unavailable in this browser. Your messages remain available as text.</p>}
       {state.supported && !state.voices.length && <p className="mt-2 text-[12px] text-zinc-400">Waiting for browser voices. If none appear, try Chrome, Edge or Safari with a speech voice installed.</p>}
       {state.mode === "voice-focus" && <p className="mt-2 text-[12px] text-zinc-400">Voice focus keeps replies collapsed. Select Show text on any reply to read it.</p>}
+      {state.brief && <p className="mt-2 text-[12px] text-zinc-400">Brief audio is on for this conversation. New answers include a spoken summary; older replies use a labelled opening excerpt. The full reply is always available.</p>}
       {state.error && <p role="alert" className="mt-2 text-[12px] text-amber-300">{state.error}</p>}
     </div>
   );
@@ -82,7 +92,12 @@ export function VoiceToolbar({ playback }: { playback: ReturnType<typeof useVoic
 export function ListenButton({ message, playback }: { message: SpokenMessage; playback: ReturnType<typeof useVoicePlayback> }) {
   const { player, state } = playback;
   const active = state.current?.id === message.id;
-  return <button type="button" onClick={() => active ? player.togglePause() : player.play(message)} disabled={!state.supported || !state.voices.length || state.microphoneActive} aria-label={`${active ? state.paused ? "Resume" : "Pause" : "Listen to"} ${NAMES[message.author as Speaker]}'s reply`} className="rounded-md border border-zinc-700 px-2 py-0.5 text-[12px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:opacity-40">
-    {active ? state.paused ? "Resume" : "Pause" : "Listen"}
-  </button>;
+  const disabled = !state.supported || !state.voices.length || state.microphoneActive;
+  const buttonClass = "rounded-md border border-zinc-700 px-2 py-0.5 text-[12px] text-zinc-400 hover:border-zinc-500 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:opacity-40";
+  return <span className="flex flex-wrap gap-1">
+    <button type="button" onClick={() => active ? player.togglePause() : player.play(message)} disabled={disabled} aria-label={`${active ? state.paused ? "Resume" : "Pause" : state.brief ? "Listen briefly to" : "Listen to"} ${NAMES[message.author as Speaker]}'s reply`} className={buttonClass}>
+      {active ? state.paused ? "Resume" : "Pause" : state.brief ? "Listen briefly" : "Listen"}
+    </button>
+    {state.brief && <button type="button" onClick={() => player.play(message, true)} disabled={disabled} aria-label={`Listen to full reply from ${NAMES[message.author as Speaker]}`} className={buttonClass}>Listen to full reply</button>}
+  </span>;
 }

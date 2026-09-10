@@ -17,11 +17,16 @@ The **Replies** control offers **Text only**, **Voice + text**, and **Voice focu
 
 - Choose a voice mode to hear new assistant replies in arrival order. Old history does not automatically replay. **Listen** on any reply plays it again, replacing the current queue.
 - Use **Pause/Resume**, **Skip reply**, and **Stop** to control playback. Stop also stops automatic reading until **Start listening** is pressed.
-- **Voice settings** includes a voice picker and preview for each assistant and speeds from 0.75× to 2×. Defaults prefer recognised feminine voices for Claude and masculine voices for ChatGPT; available voices depend on the browser and device. If a preferred voice is unavailable, choose another in the picker.
+- **Voice settings** includes a voice picker and preview for each assistant and speeds from 0.75× to 2×. Defaults prefer recognised feminine voices for Claude and masculine voices for ChatGPT, falling back to different suitable voices where possible. Explicit selections are preserved even if they are the same. A hint explains when both assistants use one voice. Available voices depend on the browser and device.
 - Preferences are saved on the device. After reloading, press **Start listening** once to allow audio again. Switching conversations cancels the previous conversation's audio. Dictation pauses playback until the microphone stops.
-- Code fences are skipped, Markdown links use their labels, and long answers are spoken in short chunks. The complete original text remains in chat.
+- Code fences are skipped, Markdown links use their labels, headings receive a pause, and long answers are spoken in short chunks. At slow playback speeds, chunks are shorter. The complete original text remains in chat.
+- **Brief audio** is a saved preference for the conversation, shared with both assistants. It plays the assistant's separate short spoken summary, with **Listen to full reply** available beside it. Replies without a summary use an explicitly labelled opening excerpt, not an invented summary. This preference is separate from the device's playback mode and microphone state.
 
-This uses the browser's Web Speech synthesis API, with no new server endpoint, database change, or paid API key. Voices marked **online** may use the browser provider's speech service. Persian requires a suitable installed voice; the app displays a message when no matching voice is available. Text mode remains usable if speech is unsupported.
+This uses the browser's Web Speech synthesis API, with no paid speech API key. Voices marked **online** may use the browser provider's speech service. Persian requires a suitable installed voice; the app displays a message when no matching voice is available. Text mode remains usable if speech is unsupported.
+
+For existing databases, apply `supabase/brief-audio.sql` before deploying this update. It adds the conversation preference and nullable message summary without changing existing message bodies or access policies. Fresh installations can use `supabase/schema.sql`.
+
+When `read_new` marks a message with `voice_mode: true` / `audio_preference: "brief"`, assistants should supply a 2–4 sentence `spoken_summary` (at most 1200 characters) alongside the complete Markdown `body`. Clients with a cached older tool schema can instead prefix `body` with `<spoken_summary>Short summary.</spoken_summary>`, then the full answer. The server extracts this prefix into the summary field. The HTTP agent mirror accepts the optional `spoken_summary` field too. The saved preference does not claim the microphone is active or the user is currently listening.
 
 Run playback tests with `npm run test:voice` (Node 22.6+). These cover queue order, cancellation, history filtering, voice choice, preferences, and failure handling; actual voice quality and availability still depend on the device.
 

@@ -1,4 +1,4 @@
-import { assistantStatus, getMessages, postMessage, type Audience } from "@/lib/board";
+import { assistantStatus, getBriefAudio, getMessages, postMessage, type Audience } from "@/lib/board";
 
 const AUDIENCES: Audience[] = ["both", "claude", "chatgpt", "none"];
 
@@ -10,8 +10,8 @@ export async function GET(req: Request) {
   const after = Number(url.searchParams.get("after") ?? 0);
   if (!thread) return Response.json({ error: "thread is required" }, { status: 400 });
   try {
-    const [messages, assistants] = await Promise.all([getMessages(thread, Number.isFinite(after) ? after : 0), assistantStatus()]);
-    return Response.json({ messages, assistants, now: new Date().toISOString() });
+    const [messages, assistants, brief_audio] = await Promise.all([getMessages(thread, Number.isFinite(after) ? after : 0), assistantStatus(), getBriefAudio(thread)]);
+    return Response.json({ messages, assistants, brief_audio, now: new Date().toISOString() });
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 500 });
   }

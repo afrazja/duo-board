@@ -251,11 +251,14 @@ export default function BoardPage() {
   const [navOpen, setNavOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [savingBrief, setSavingBrief] = useState(false);
+  const briefSaveVersion = useRef(0);
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
   const dictation = useDictation(appendToDraft);
-  const playback = useVoicePlayback(activeId, dictation.listening);
+  const briefAudio = threads.find((thread) => thread.id === activeId)?.brief_audio ?? false;
+  const playback = useVoicePlayback(activeId, dictation.listening, briefAudio);
   const speechPlayer = playback.player;
 
   const loadThreads = useCallback(async () => {
@@ -293,12 +296,13 @@ export default function BoardPage() {
     setMessages([]);
     const poll = async () => {
       try {
+        const versionAtPoll = briefSaveVersion.current;
         const res = await fetch(`/api/messages?thread=${activeId}&after=${lastSeq.current}`);
         if (res.status === 401) {
           location.href = "/login";
           return;
         }
-        const data = (await res.json()) as { messages?: Message[]; assistants?: AssistantStatus[]; error?: string; now?: string };
+        const data = (await res.json()) as { messages?: Message[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean };
         if (stopped) return;
         if (data.error) {
           setError(data.error);
@@ -306,6 +310,10 @@ export default function BoardPage() {
         }
         setError("");
         if (data.assistants) setAssistants(data.assistants);
+        if (typeof data.brief_audio === "boolean" && versionAtPoll % 2 === 0 && versionAtPoll === briefSaveVersion.current) {
+          speechPlayer.setBrief(data.brief_audio);
+          setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.brief_audio !== data.brief_audio ? { ...thread, brief_audio: data.brief_audio! } : thread));
+        }
         if (data.messages && data.messages.length) {
           speechPlayer.ingest(data.messages, data.now);
           lastSeq.current = data.messages[data.messages.length - 1].seq;
@@ -374,6 +382,21 @@ export default function BoardPage() {
   function pickThread(id: string) {
     setActiveId(id);
     setNavOpen(false);
+  }
+
+  async function changeBriefAudio(brief: boolean) {
+    if (!activeId || savingBrief) return;
+    const threadId = activeId;
+    briefSaveVersion.current += 1;
+    setSavingBrief(true);
+    try {
+      const res = await fetch("/api/threads", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: threadId, brief_audio: brief }) });
+      const data = await res.json() as { thread?: { id: string; brief_audio: boolean }; error?: string };
+      if (!res.ok || !data.thread) throw new Error(data.error ?? "Could not save Brief audio");
+      setThreads((prev) => prev.map((thread) => thread.id === threadId ? { ...thread, brief_audio: data.thread!.brief_audio } : thread));
+      setError("");
+    } catch (e) { setError((e as Error).message); }
+    finally { briefSaveVersion.current += 1; setSavingBrief(false); }
   }
 
   const rows = groupRows(messages);
@@ -458,7 +481,7 @@ export default function BoardPage() {
           {error && <span className="text-[12px] text-rose-400">{error}</span>}
         </header>
 
-        <VoiceToolbar playback={playback} />
+        <VoiceToolbar playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
         <div className="hidden grid-cols-2 border-b border-zinc-800 text-center text-[12px] uppercase tracking-wide text-zinc-500 md:grid">
           <div className="py-1.5">Claude</div>

@@ -45,6 +45,7 @@ export async function POST(req: Request, ctx: Ctx) {
         author: who,
         body: body.body,
         replyTo: typeof body.reply_to === "string" ? body.reply_to : null,
+        spokenSummary: typeof body.spoken_summary === "string" ? body.spoken_summary : null,
       });
       return Response.json({ message });
     }

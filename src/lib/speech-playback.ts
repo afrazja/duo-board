@@ -1,4 +1,5 @@
 export type Speaker = "claude" | "chatgpt";
+export type PlaybackSpeaker = Speaker | "system";
 export type VoiceMode = "text" | "voice-text" | "voice-focus";
 export interface SpokenMessage {
   id: string;
@@ -6,6 +7,7 @@ export interface SpokenMessage {
   body: string;
   created_at: string;
   thread_id: string;
+  spoken_summary?: string | null;
 }
 
 export function speechText(markdown: string): string {
@@ -17,6 +19,10 @@ export function speechText(markdown: string): string {
     .replace(/https?:\/\/\S+/g, "link")
     .replace(/^\s*\|?[\s:|-]+\|[\s:|-]*$/gm, "")
     .replace(/^\s*\|(.+)\|\s*$/gm, (_, row: string) => `${row.split("|").map((cell) => cell.trim()).filter(Boolean).join(", ")}. `)
+    .replace(/^\s*#{1,6}\s+(.+?)\s*#*\s*$/gm, (_, heading: string) => {
+      const clean = heading.replace(/[*_`]/g, "").trim();
+      return /[.!?;:…]$/.test(clean) ? clean : `${clean}.`;
+    })
     .replace(/^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)/gm, "")
     .replace(/^\s*[-*_]{3,}\s*$/gm, "")
     .replace(/[*_`~]/g, "")
@@ -42,15 +48,37 @@ export function speechChunks(text: string, size = 260): string[] {
   return chunks;
 }
 
-export function chooseVoice(voices: SpeechSynthesisVoice[], speaker: Speaker, preferred: string, text: string) {
+export function chooseVoice(voices: SpeechSynthesisVoice[], speaker: Speaker, preferred: string, text: string, avoid?: string) {
   const saved = voices.find((v) => v.voiceURI === preferred);
   if (saved) return saved;
   const language = /[\u0600-\u06ff]/.test(text) ? "fa" : "en";
-  const matching = voices.filter((v) => v.lang.toLowerCase().startsWith(language));
+  const allMatching = voices.filter((v) => v.lang.toLowerCase().startsWith(language));
+  const distinct = allMatching.filter((v) => v.voiceURI !== avoid);
+  const matching = distinct.length ? distinct : allMatching;
   const names = speaker === "claude"
     ? /zira|aria|jenny|samantha|karen|moira|victoria|susan|hazel|female/i
     : /david|guy|mark|daniel|alex\b|george|james|thomas|\bmale\b/i;
   return matching.find((v) => names.test(v.name)) ?? matching.find((v) => v.default) ?? matching[0];
+}
+
+export function chooseVoicePair(voices: SpeechSynthesisVoice[], preferred: { claude: string; chatgpt: string }, text: string) {
+  if (preferred.chatgpt && voices.some((v) => v.voiceURI === preferred.chatgpt) && !voices.some((v) => v.voiceURI === preferred.claude)) {
+    const chatgpt = chooseVoice(voices, "chatgpt", preferred.chatgpt, text);
+    return { chatgpt, claude: chooseVoice(voices, "claude", preferred.claude, text, chatgpt?.voiceURI) };
+  }
+  const claude = chooseVoice(voices, "claude", preferred.claude, text);
+  return { claude, chatgpt: chooseVoice(voices, "chatgpt", preferred.chatgpt, text, claude?.voiceURI) };
+}
+
+export function chunkSizeForRate(rate: number) {
+  return Math.max(80, Math.floor(260 * Math.min(1, rate)));
+}
+
+export function audioContent(message: SpokenMessage, brief: boolean) {
+  if (!brief) return { text: speechText(message.body), kind: "full" as const };
+  if (message.spoken_summary?.trim()) return { text: speechText(message.spoken_summary), kind: "brief" as const };
+  const excerpt = speechChunks(speechText(message.body), 420)[0] ?? "";
+  return { text: excerpt ? `Opening excerpt. ${excerpt} Select Listen to full reply for the complete answer.` : "", kind: "excerpt" as const };
 }
 
 interface Preferences {
@@ -63,20 +91,21 @@ export interface PlaybackSnapshot extends Preferences {
   supported: boolean;
   voices: SpeechSynthesisVoice[];
   enabled: boolean;
-  current: { id: string; author: Speaker } | null;
+  current: { id: string; author: PlaybackSpeaker; kind: "full" | "brief" | "excerpt" | "system" } | null;
   queued: number;
   paused: boolean;
   microphoneActive: boolean;
   error: string;
+  brief: boolean;
 }
 const DEFAULTS: Preferences = { mode: "text", rate: 1, claude: "", chatgpt: "" };
 const PREF_KEY = "duo_voice_preferences_v1";
-const NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
+const NAMES = { claude: "Claude", chatgpt: "ChatGPT", system: "Duo Board" };
 type SpeechPort = Pick<SpeechSynthesis, "speak" | "cancel" | "pause" | "resume" | "getVoices" | "addEventListener" | "removeEventListener">;
-interface Item { id: string; author: Speaker; chunks: string[]; index: number; voice: SpeechSynthesisVoice; rate: number }
+interface Item { id: string; author: PlaybackSpeaker; kind: "full" | "brief" | "excerpt" | "system"; chunks: string[]; index: number; voice: SpeechSynthesisVoice; rate: number }
 
 export class SpeechPlayback {
-  private snapshot: PlaybackSnapshot = { ...DEFAULTS, supported: false, voices: [], enabled: false, current: null, queued: 0, paused: false, microphoneActive: false, error: "" };
+  private snapshot: PlaybackSnapshot = { ...DEFAULTS, supported: false, voices: [], enabled: false, current: null, queued: 0, paused: false, microphoneActive: false, error: "", brief: false };
   private listeners = new Set<() => void>();
   private port: SpeechPort | null = null;
   private createUtterance: ((text: string) => SpeechSynthesisUtterance) | null = null;
@@ -93,7 +122,7 @@ export class SpeechPlayback {
   getSnapshot = () => this.snapshot;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(patch: Partial<PlaybackSnapshot> = {}) {
-    this.snapshot = { ...this.snapshot, ...patch, current: this.current && { id: this.current.id, author: this.current.author }, queued: this.queue.length, paused: this.manualPause || this.snapshot.microphoneActive };
+    this.snapshot = { ...this.snapshot, ...patch, current: this.current && { id: this.current.id, author: this.current.author, kind: this.current.kind }, queued: this.queue.length, paused: this.manualPause || this.snapshot.microphoneActive };
     this.listeners.forEach((listener) => listener());
   }
   private refreshVoices = () => this.update({ voices: this.port?.getVoices() ?? [] });
@@ -126,6 +155,7 @@ export class SpeechPlayback {
     try { this.storage?.setItem(PREF_KEY, JSON.stringify({ mode, rate, claude, chatgpt })); } catch {}
   }
   setVoice(speaker: Speaker, uri: string) { this.save({ [speaker]: uri }); }
+  setBrief(brief: boolean) { if (brief !== this.snapshot.brief) this.update({ brief }); }
   setRate(rate: number) { if ([0.75, 1, 1.25, 1.5, 2].includes(rate)) this.save({ rate }); }
   setMode(mode: VoiceMode) {
     this.save({ mode });
@@ -137,7 +167,10 @@ export class SpeechPlayback {
     this.startedAt = Date.now();
     this.update({ enabled: true, error: "" });
     // Called by a click, giving browsers the interaction needed to allow audio.
-    this.preview("chatgpt", "Voice mode is on. New replies will play aloud.");
+    this.clear();
+    const voice = this.snapshot.voices.find((v) => v.default) ?? this.snapshot.voices[0];
+    this.queue.push({ id: "system-voice-enabled", author: "system", kind: "system", voice, rate: this.snapshot.rate, chunks: ["Duo Board. Voice playback is on. New replies will play aloud."], index: 0 });
+    this.run();
   }
   setThread(threadId: string | null) {
     if (this.threadId === threadId) return;
@@ -155,21 +188,21 @@ export class SpeechPlayback {
       if (this.snapshot.enabled && Date.parse(message.created_at) >= this.startedAt + clockOffset) this.add(message);
     }
   }
-  play(message: SpokenMessage) { this.clear(); this.add(message); }
+  play(message: SpokenMessage, full = false) { this.clear(); this.add(message, full); }
   preview(speaker: Speaker, text = `Hello. This is ${NAMES[speaker]}'s voice.`) {
-    this.play({ id: `preview-${speaker}`, author: speaker, body: text, created_at: "", thread_id: this.threadId ?? "" });
+    this.play({ id: `preview-${speaker}`, author: speaker, body: text, created_at: "", thread_id: this.threadId ?? "" }, true);
   }
-  private add(message: SpokenMessage) {
+  private add(message: SpokenMessage, full = false) {
     if (!this.port || (message.author !== "claude" && message.author !== "chatgpt")) return;
     if (this.current?.id === message.id || this.queue.some((item) => item.id === message.id)) return;
-    const text = speechText(message.body);
+    const { text, kind } = audioContent(message, this.snapshot.brief && !full);
     if (!text) return;
-    const voice = chooseVoice(this.snapshot.voices, message.author, this.snapshot[message.author], text);
+    const voice = chooseVoicePair(this.snapshot.voices, this.snapshot, text)[message.author];
     if (!voice) {
       this.update({ error: /[\u0600-\u06ff]/.test(text) ? "No Persian voice is available. Choose an installed voice in Voice settings, or read the text." : "No English voice is available. Choose a voice in Voice settings." });
       return;
     }
-    this.queue.push({ id: message.id, author: message.author, chunks: speechChunks(`${NAMES[message.author]}. ${text}`), index: 0, voice, rate: this.snapshot.rate });
+    this.queue.push({ id: message.id, author: message.author, kind, chunks: speechChunks(`${NAMES[message.author]}. ${text}`, chunkSizeForRate(this.snapshot.rate)), index: 0, voice, rate: this.snapshot.rate });
     this.update({ error: "" });
     this.run();
   }
