@@ -414,8 +414,18 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
       .eq("thread_id", threadId)
       .maybeSingle();
     if (tfErr) throw new Error(`Reading one thread needs supabase/thread-sessions.sql: ${tfErr.message}`);
-    floor = Number(tf?.floor_seq ?? 0);
-    heldBefore = ((tf?.held_seqs ?? []) as unknown[]).map(Number);
+    if (tf) {
+      floor = Number(tf.floor_seq ?? 0);
+      heldBefore = ((tf.held_seqs ?? []) as unknown[]).map(Number);
+    } else {
+      // First scoped read of this conversation: start from the unscoped
+      // place, not zero. Everything at or below the global floor was
+      // delivered or held before per-message rows existed, so starting at
+      // zero would replay it. Only this conversation's held replies carry over.
+      const { data: mine, error: mineErr } = await db().from("messages").select("seq").eq("thread_id", threadId).in("seq", heldBefore.length ? heldBefore : [-1]);
+      if (mineErr) fail(mineErr);
+      heldBefore = (mine ?? []).map((m) => Number(m.seq));
+    }
   }
 
   // New candidates above the floor, plus everything previously held. A scoped

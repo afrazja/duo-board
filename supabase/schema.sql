@@ -97,6 +97,19 @@ create table if not exists public.assistant_thread_floors (
 alter table public.assistant_thread_floors enable row level security;
 revoke all on public.assistant_thread_floors from anon, authenticated;
 
+-- Seed existing conversations from each assistant's unscoped place, so a
+-- scoped read never replays messages the global floor already covered.
+insert into public.assistant_thread_floors (assistant, thread_id, floor_seq, held_seqs)
+select a.name, t.id, a.floor_seq,
+       coalesce(
+         (select array_agg(h) from unnest(a.held_seqs) as h
+            join public.messages m on m.seq = h
+           where m.thread_id = t.id),
+         '{}')
+from public.assistants a
+cross join public.threads t
+on conflict (assistant, thread_id) do nothing;
+
 -- Thread list with counts and last activity, in one query.
 alter table public.threads add column if not exists blind_first_round boolean not null default true;
 alter table public.messages add column if not exists blind_round boolean not null default true;
