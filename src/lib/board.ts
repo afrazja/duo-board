@@ -112,6 +112,16 @@ async function roundContext(threadId: string, anchors: { reply_to: string | null
       rows.push(p);
       have.add(p.id);
     }
+    // An old question's direct replies decide whether it was answered, and
+    // they may be outside the window too.
+    const { data: replies, error: rErr } = await db().from("messages").select(ROUND_COLUMNS).eq("thread_id", threadId).in("reply_to", found.map((p) => p.id));
+    if (rErr) fail(rErr);
+    for (const r of (replies ?? []) as RoundMessage[]) {
+      if (!have.has(r.id)) {
+        rows.push(r);
+        have.add(r.id);
+      }
+    }
     wanted = found.map((p) => p.reply_to).filter((id): id is string => !!id && !have.has(id));
   }
   return rows;

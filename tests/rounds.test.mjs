@@ -141,6 +141,13 @@ test("A linked reply whose question is missing from the context is withheld, not
   seq = 0;
   const gpt = msg("chatgpt", { replyTo: "q-not-in-context" });
   assert.deepEqual([...withheldFrom("claude", [gpt], byThread(gpt), T0 + 60_000)], [gpt.seq]);
+  // Even when a newer question exists that is addressed to one assistant only:
+  // the explicit link must not fall back to it.
+  seq = 0;
+  const later = msg("user", { id: "later", to: "chatgpt" });
+  const gptOld = msg("chatgpt", { replyTo: "missing-old-question" });
+  assert.equal(questionFor(gptOld, [later, gptOld]), null);
+  assert.deepEqual([...withheldFrom("claude", [gptOld], byThread(later, gptOld), T0 + 60_000)], [gptOld.seq]);
   // An unlinked reply with no question at all is simply not a round.
   const loose = msg("chatgpt");
   assert.deepEqual([...withheldFrom("claude", [loose], byThread(loose), T0 + 60_000)], []);
