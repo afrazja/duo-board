@@ -31,6 +31,8 @@ export interface ThreadSummary {
   last_message_at: string | null;
   brief_audio: boolean;
   blind_first_round: boolean;
+  /** While true, assistants' reads of this conversation deliver nothing and their loops skip it; nothing is lost. */
+  paused: boolean;
 }
 
 export interface AssistantStatus {
@@ -169,7 +171,7 @@ export async function listThreads(): Promise<ThreadSummary[]> {
     .eq("archived", false)
     .order("created_at", { ascending: false });
   if (error) fail(error);
-  return (data ?? []).map((t) => ({ ...t, message_count: Number(t.message_count), blind_first_round: t.blind_first_round !== false }));
+  return (data ?? []).map((t) => ({ ...t, message_count: Number(t.message_count), blind_first_round: t.blind_first_round !== false, paused: t.paused === true }));
 }
 
 export async function createThread(title: string): Promise<ThreadSummary> {
@@ -177,19 +179,26 @@ export async function createThread(title: string): Promise<ThreadSummary> {
   if (!clean) throw new Error("A thread needs a title");
   const { data, error } = await db().from("threads").insert({ title: clean }).select("*").single();
   if (error) fail(error);
-  return { ...data, message_count: 0, last_message_at: null, blind_first_round: data.blind_first_round !== false };
+  return { ...data, message_count: 0, last_message_at: null, blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-export async function setThreadPreferences(threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean }) {
+export async function setThreadPreferences(threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
   const { data, error } = await db().from("threads").update(preferences).eq("id", threadId).select("*").single();
   if (error) fail(error);
-  return { id: data.id as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false };
+  return { id: data.id as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
 export async function getThreadPreferences(threadId: string) {
   const { data, error } = await db().from("threads").select("*").eq("id", threadId).single();
   if (error) fail(error);
-  return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false };
+  return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
+}
+
+/** Whether a conversation is paused. A database without the column answers false. */
+async function isPaused(threadId: string): Promise<boolean> {
+  const { data, error } = await db().from("threads").select("paused").eq("id", threadId).maybeSingle();
+  if (error) return false;
+  return (data as { paused?: boolean } | null)?.paused === true;
 }
 
 export async function getMessages(threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
@@ -316,6 +325,8 @@ export interface NewForAssistant {
   held_for_you?: number;
   /** Present when the read was scoped to one thread. */
   thread_id?: string;
+  /** True when the scoped conversation is paused: nothing was delivered and nothing was stamped. */
+  paused?: boolean;
   response_guidance?: string;
 }
 
@@ -406,6 +417,11 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
   const lastSeenGlobal = Number(cur?.last_seen_seq ?? 0);
   let floor = Number(cur?.floor_seq ?? 0);
   let heldBefore = ((cur?.held_seqs ?? []) as unknown[]).map(Number);
+  if (threadId && (await isPaused(threadId))) {
+    // Paused: deliver nothing and move nothing, so resuming picks up
+    // everything that arrived meanwhile, in order.
+    return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, paused: true };
+  }
   if (threadId) {
     const { data: tf, error: tfErr } = await db()
       .from("assistant_thread_floors")

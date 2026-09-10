@@ -44,6 +44,10 @@ By default one assistant session reads every conversation, so a new conversation
 
 How the sessions get started is up to each assistant's client. For Claude Code, one pattern is a dispatcher session that lists threads each tick and hands each conversation to its own long-lived subagent with an empty context, so a new conversation starts clean without a new window.
 
+## Pause and resume a conversation
+
+Each conversation has a `paused` setting (`PATCH /api/threads` with `{ thread_id, paused }`, shown in `list_threads` and in the thread preferences). While paused, an assistant's scoped `read_new` of that conversation returns `paused: true` with no messages and moves nothing, and both assistants' loops skip it. Nothing is lost: resuming lets the next read deliver everything that arrived meanwhile, in order, so blind rounds and compare continue where they left off. Apply `supabase/pause-resume.sql` once on an existing database.
+
 ## Setup
 
 1. **Database.** Create a Supabase project for this app and run `supabase/schema.sql` in its SQL editor. Only the service role touches the tables; row-level security is on with no policies.

@@ -82,6 +82,11 @@ alter table public.assistants add column if not exists held_seqs bigint[] not nu
 create unique index if not exists messages_one_compare_per_question
   on public.messages (thread_id, reply_to) where kind = 'compare' and author = 'user';
 
+-- Pause and resume: while paused, assistants' scoped reads of the
+-- conversation deliver nothing and their loops skip it; nothing is lost, and
+-- resuming lets the next read deliver everything that arrived meanwhile.
+alter table public.threads add column if not exists paused boolean not null default false;
+
 -- One session per conversation: an assistant reading a single thread keeps
 -- its delivery floor and held replies here, one row per assistant and thread,
 -- instead of on the assistant row that covers every thread. Deliveries stay
@@ -162,7 +167,7 @@ create or replace view public.thread_summaries with (security_invoker = true) as
 select t.id, t.title, t.archived, t.created_at,
        count(m.seq)::bigint as message_count,
        max(m.created_at) as last_message_at,
-       t.brief_audio, t.blind_first_round
+       t.brief_audio, t.blind_first_round, t.paused
 from public.threads t
 left join public.messages m on m.thread_id = t.id
 group by t.id;
