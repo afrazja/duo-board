@@ -22,7 +22,7 @@ export async function GET(req: Request, ctx: Ctx) {
     if (action === "thread") {
       const id = new URL(req.url).searchParams.get("id");
       if (!id) return Response.json({ error: "id is required" }, { status: 400 });
-      return Response.json({ messages: await readThread(id) });
+      return Response.json({ messages: await readThread(id, 60, who) });
     }
     return Response.json({ error: "Unknown action" }, { status: 404 });
   } catch (e) {
