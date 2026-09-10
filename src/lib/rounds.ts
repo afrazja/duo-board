@@ -28,9 +28,15 @@ export const STALE_ROUND_MS = 2 * 60 * 60 * 1000;
  * the latest person's message in the thread before it.
  */
 export function questionFor(m: RoundMessage, thread: RoundMessage[], depth = 0): RoundMessage | null {
-  if (m.reply_to && depth < 8) {
+  if (m.reply_to) {
+    // An explicit link either resolves or yields nothing. It must never fall
+    // through to the latest-question guess: a missing parent would then be
+    // judged against an unrelated question, possibly one addressed to a
+    // single assistant, and the reply would slip past the round.
+    if (depth >= 8) return null;
     const target = thread.find((x) => x.id === m.reply_to && x.thread_id === m.thread_id);
-    if (target) return target.author === "user" ? target : questionFor(target, thread, depth + 1);
+    if (!target) return null;
+    return target.author === "user" ? target : questionFor(target, thread, depth + 1);
   }
   let best: RoundMessage | null = null;
   for (const q of thread) {
