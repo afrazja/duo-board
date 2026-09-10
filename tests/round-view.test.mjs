@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupRows, mergeMessages, playableMessages, hasBothAnswers, openingExcerpt } from '../src/components/round-model.ts';
+import { groupRows, mergeMessages, playableMessages, roundState, hasBothAnswers, openingExcerpt } from '../src/components/round-model.ts';
 
 const message = (seq, author, extra = {}) => ({ seq, id: String(seq), thread_id: 'thread', author, addressed_to: author === 'user' ? 'both' : 'none', body: `Reply ${seq}`, spoken_summary: null, reply_to: null, kind: 'message', created_at: new Date(seq * 1000).toISOString(), ...extra });
 
@@ -21,8 +21,20 @@ test('compare requests and delayed compare replies live under the original quest
 
 test('a held first answer never enters playback; both enter in arrival order on reveal', () => {
   const first = [message(1, 'user'), message(2, 'chatgpt', { reply_to: '1' })];
-  assert.deepEqual(playableMessages(groupRows(first)).map(m => m.seq), [1]);
-  assert.deepEqual(playableMessages(groupRows([...first, message(3, 'claude', { reply_to: '1' })])).map(m => m.seq), [1, 2, 3]);
+  assert.deepEqual(playableMessages(groupRows(first), 4000).map(m => m.seq), [1]);
+  assert.deepEqual(playableMessages(groupRows([...first, message(3, 'claude', { reply_to: '1' })]), 4000).map(m => m.seq), [1, 2, 3]);
+});
+
+test('unlinked progress does not reveal a modern round or enable Compare', () => {
+  const rows = groupRows([message(1, 'user'), message(2, 'chatgpt'), message(3, 'claude', { reply_to: '1' })]);
+  assert.deepEqual(roundState(rows[0], rows, 4000), { held: true, paired: false });
+});
+
+test('expired and moved-on rounds release available text without claiming both answered', () => {
+  const rows = groupRows([message(1, 'user'), message(2, 'chatgpt', { reply_to: '1' })]);
+  assert.deepEqual(roundState(rows[0], rows, 3 * 60 * 60 * 1000), { held: false, paired: false });
+  const moved = groupRows([message(1, 'user'), message(2, 'chatgpt', { reply_to: '1' }), message(3, 'user'), message(4, 'claude', { reply_to: '3' })]);
+  assert.deepEqual(roundState(moved[0], moved, 5000), { held: false, paired: false });
 });
 
 test('one-assistant questions and notes do not become blind rounds', () => {

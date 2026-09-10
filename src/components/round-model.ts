@@ -51,14 +51,24 @@ export function isFirstRound(row: BoardRow): boolean {
   return row.user?.addressed_to === "both" && row.user.kind !== "compare";
 }
 
-export function hasBothAnswers(replies: Replies): boolean {
-  return replies.claude.length > 0 && replies.chatgpt.length > 0;
+export function hasBothAnswers(replies: Replies, questionId?: string): boolean {
+  return (["claude", "chatgpt"] as const).every((who) => replies[who].some((message) => !questionId || message.reply_to === questionId));
+}
+
+export function roundState(row: BoardRow, rows: BoardRow[], now: number) {
+  const question = row.user;
+  if (!question || !isFirstRound(row)) return { held: false, paired: false };
+  const answered = (who: "claude" | "chatgpt") => row[who].some((message) => message.reply_to === question.id || message.kind === undefined);
+  const paired = answered("claude") && answered("chatgpt");
+  const expired = now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000;
+  const movedOn = (who: "claude" | "chatgpt") => answered(who) || rows.some((later) => later.user && later.user.seq > question.seq && later[who].some((message) => message.reply_to === later.user!.id));
+  return { paired, held: !paired && !expired && !(movedOn("claude") && movedOn("chatgpt")) };
 }
 
 /** The speech queue receives exactly the replies that the page has revealed. */
-export function playableMessages(rows: BoardRow[]): BoardMessage[] {
+export function playableMessages(rows: BoardRow[], now = Date.now()): BoardMessage[] {
   return rows.flatMap((row) => {
-    if (isFirstRound(row) && !hasBothAnswers(row)) return row.user ? [row.user] : [];
+    if (roundState(row, rows, now).held) return row.user ? [row.user] : [];
     return [
       ...(row.user ? [row.user] : []), ...row.claude, ...row.chatgpt,
       ...(row.comparison ? [row.comparison.request, ...row.comparison.claude, ...row.comparison.chatgpt] : []),

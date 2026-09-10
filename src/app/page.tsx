@@ -6,7 +6,7 @@ import { useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 
 import { Body } from "@/components/message-body";
 import { RoundReplies } from "@/components/round-replies";
-import { groupRows, mergeMessages, playableMessages, type BoardRow, type BoardMessage } from "@/components/round-model";
+import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -245,7 +245,7 @@ export default function BoardPage() {
     loaded.current.messages = next;
     // Unrevealed text never enters the audio queue. Previously held answers
     // become eligible together when the second assistant's answer arrives.
-    speechPlayer.ingest(playableMessages(groupRows(next)), serverNow);
+    speechPlayer.ingest(playableMessages(groupRows(next), serverNow ? Date.parse(serverNow) : Date.now()), serverNow);
     setMessages(next);
   }, [speechPlayer]);
 
@@ -523,7 +523,7 @@ export default function BoardPage() {
                   <Body text={row.user.body} />
                 </div>
               )}
-              <RoundReplies row={row} assistants={assistants} now={now} playback={playback} comparing={comparing.includes(row.key)} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+              <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} comparing={comparing.includes(row.key)} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
             </section>
           ))}
         </div>

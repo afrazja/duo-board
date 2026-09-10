@@ -39,27 +39,29 @@ function ReplyBubble({ message, askedAt, playback, compact }: { message: BoardMe
   </article>;
 }
 
-function Waiting({ who, question, status, now, ready = false }: { who: "claude" | "chatgpt"; question?: BoardMessage; status?: AssistantStatus; now: number; ready?: boolean }) {
+function Waiting({ who, question, status, now, ready = false, ended = false }: { who: "claude" | "chatgpt"; question?: BoardMessage; status?: AssistantStatus; now: number; ready?: boolean; ended?: boolean }) {
   const working = Boolean(question && status?.working_on_seq === question.seq);
   const waited = question ? duration(now - Date.parse(question.created_at)) : "";
+  const old = ended || Boolean(question && now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000);
   return <div className="rounded-xl border border-dashed border-zinc-700/80 bg-zinc-900/30 p-4 text-[13px] leading-6 text-zinc-400">
-    <p className={`font-medium ${TONES[who]}`}>{NAMES[who]} · {ready ? "Answer ready" : working ? "Working on an answer" : "Waiting for an answer"}</p>
-    <p>{ready ? "Held until both answers are ready." : `Waiting ${waited || "for a reply"}. You can keep the conversation going.`}</p>
+    <p className={`font-medium ${TONES[who]}`}>{NAMES[who]} · {ready ? "Answer ready" : old ? "No answer received" : working ? "Working on an answer" : "Waiting for an answer"}</p>
+    <p>{ready ? "Held until both answers are ready." : old ? "You can ask a new question whenever you like." : `Waiting ${waited || "for a reply"}. You can keep the conversation going.`}</p>
   </div>;
 }
 
-export function RoundReplies({ row, assistants, now, playback, comparing, compareError, onCompare }: {
+export function RoundReplies({ row, state, assistants, now, playback, comparing, compareError, onCompare }: {
   row: BoardRow; assistants: AssistantStatus[]; now: number; playback: Playback;
+  state: { held: boolean; paired: boolean };
   comparing: boolean; compareError?: string; onCompare: (question: BoardMessage) => void;
 }) {
   const blind = isFirstRound(row);
-  const revealed = !blind || hasBothAnswers(row);
+  const revealed = !state.held;
   const compare = row.comparison;
-  const compared = compare && hasBothAnswers(compare);
+  const compared = compare && hasBothAnswers(compare, compare.request.id);
   return <div className="space-y-4">
     {blind && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
-      <div><p className="text-[13px] font-medium text-zinc-200">{revealed ? "Both first answers are ready" : "First answers · waiting for both"}</p><p className="mt-0.5 text-[12px] leading-5 text-zinc-500">{revealed ? "Read each take, then compare them when you want." : "Both answers will appear together when they are ready."}</p></div>
-      {revealed && !compare && <button type="button" disabled={comparing} onClick={() => row.user && onCompare(row.user)} className={BUTTON}>{comparing ? "Requesting comparison…" : "Compare answers"}</button>}
+      <div><p className="text-[13px] font-medium text-zinc-200">{state.paired ? "Both first answers are ready" : revealed ? "Available answers" : "First answers · waiting for both"}</p><p className="mt-0.5 text-[12px] leading-5 text-zinc-500">{state.paired ? "Read each take, then compare them when you want." : revealed ? "This first round has ended. You can read the replies received." : "Both answers will appear together when they are ready."}</p></div>
+      {state.paired && !compare && <button type="button" disabled={comparing} onClick={() => row.user && onCompare(row.user)} className={BUTTON}>{comparing ? "Requesting comparison…" : "Compare answers"}</button>}
       {compare && <span className="rounded-full border border-indigo-500/30 px-2.5 py-1 text-[12px] text-indigo-300">{compared ? "Comparison complete" : "Comparison requested"}</span>}
       {compareError && <p role="alert" className="w-full text-[13px] text-rose-300">{compareError} You can try Compare answers again.</p>}
     </div>}
@@ -73,7 +75,7 @@ export function RoundReplies({ row, assistants, now, playback, comparing, compar
       const expected = row.user && (row.user.addressed_to === "both" || row.user.addressed_to === who);
       return <div key={who} className="min-w-0 space-y-3">
         {revealed && row[who].map((message) => <ReplyBubble key={message.id} message={message} askedAt={row.user?.created_at} playback={playback} compact={blind} />)}
-        {expected && (!revealed || !row[who].length) && <Waiting who={who} question={row.user} now={now} ready={row[who].length > 0} status={assistants.find((a) => a.name === who)} />}
+        {expected && (!revealed || !row[who].length) && <Waiting who={who} question={row.user} now={now} ended={blind && revealed && !state.paired} ready={row[who].length > 0} status={assistants.find((a) => a.name === who)} />}
       </div>;
     })}</div>
   </div>;
