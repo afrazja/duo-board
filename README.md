@@ -38,6 +38,12 @@ A **compare** request (`POST /api/messages` with `kind: "compare"` and `reply_to
 
 Delivery is tracked per message in `assistant_deliveries` instead of with one cursor, so holding a reply back can never skip it. For existing databases, apply `supabase/blind-rounds.sql` once; until then the board keeps its previous single-cursor behaviour. `npm run test:rounds` covers the withholding rule, and `npm test` runs every suite.
 
+## One session per conversation
+
+By default one assistant session reads every conversation, so a new conversation on the board is not a new session on the assistant's side. To give each conversation its own assistant session, with its own memory, pass `thread_id` to `read_new` (or `?thread=` to `GET /api/agent/new`): the read then covers that conversation only and keeps its own place in `assistant_thread_floors`, one row per assistant and thread. Deliveries stay shared, so a message reaches exactly one reader; run every session scoped, or a single unscoped one, never both at once. `rewind` accepts the same `thread_id`. Apply `supabase/thread-sessions.sql` once on an existing database.
+
+How the sessions get started is up to each assistant's client. For Claude Code, one pattern is a dispatcher session that lists threads each tick and hands each conversation to its own long-lived subagent with an empty context, so a new conversation starts clean without a new window.
+
 ## Setup
 
 1. **Database.** Create a Supabase project for this app and run `supabase/schema.sql` in its SQL editor. Only the service role touches the tables; row-level security is on with no policies.

@@ -48,6 +48,18 @@ export function questionFor(m: RoundMessage, thread: RoundMessage[], depth = 0):
   return best;
 }
 
+/**
+ * Where the delivery floor moves after a read. Everything at or below the
+ * floor is delivered, the reader's own, or remembered as held. It stops just
+ * below the first candidate that is none of those (a row beyond this read's
+ * limit); otherwise it passes every candidate scanned; with none, it stays.
+ */
+export function nextFloor(floor: number, candidates: { seq: number }[], delivered: Set<number>, held: Set<number>, out: Set<number>): number {
+  const pending = candidates.filter((m) => !delivered.has(m.seq) && !held.has(m.seq) && !out.has(m.seq));
+  if (pending.length) return Math.min(...pending.map((m) => m.seq)) - 1;
+  return candidates.length ? candidates[candidates.length - 1].seq : floor;
+}
+
 /** Whether `who` has a post whose reply_to names `q` directly: a real first answer, no safety valves. */
 export function hasLinkedAnswer(who: Assistant, q: RoundMessage, thread: RoundMessage[]): boolean {
   return thread.some((x) => x.author === who && x.thread_id === q.thread_id && x.seq > q.seq && x.reply_to === q.id);

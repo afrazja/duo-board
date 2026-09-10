@@ -1,7 +1,7 @@
 import { db } from "./db";
 import type { Assistant } from "./agent-auth";
 import { BRIEF_AUDIO_GUIDANCE, normalizeSpokenReply } from "./spoken-reply";
-import { hasLinkedAnswer, withheldFrom, type RoundMessage } from "./rounds";
+import { hasLinkedAnswer, nextFloor, withheldFrom, type RoundMessage } from "./rounds";
 
 export type Author = "user" | Assistant;
 export type Audience = "both" | Assistant | "none";
@@ -314,6 +314,8 @@ export interface NewForAssistant {
   cursor: number;
   /** Replies from the other assistant held back until this assistant answers the same question. */
   held_for_you?: number;
+  /** Present when the read was scoped to one thread. */
+  thread_id?: string;
   response_guidance?: string;
 }
 
@@ -349,8 +351,10 @@ async function stampRead(assistant: Assistant, forYou: { seq: number }[], extra:
  * migration, delivery is tracked per message and the other assistant's answer
  * to an open round is withheld until this assistant has answered it.
  */
-export async function readNew(assistant: Assistant, limit = 100): Promise<NewForAssistant> {
-  return (await hasRounds()) ? readNewRounds(assistant, limit) : readNewLegacy(assistant, limit);
+export async function readNew(assistant: Assistant, limit = 100, threadId?: string): Promise<NewForAssistant> {
+  if (await hasRounds()) return readNewRounds(assistant, limit, threadId);
+  if (threadId) throw new Error("Reading one thread needs the blind-round migration (supabase/blind-rounds.sql and thread-sessions.sql)");
+  return readNewLegacy(assistant, limit);
 }
 
 /** Single-cursor delivery, for a database without the blind-round migration. */
@@ -388,22 +392,44 @@ async function readNewLegacy(assistant: Assistant, limit: number): Promise<NewFo
  * recorded in held_seqs. held_seqs: replies held back from this assistant,
  * re-evaluated on every read, so a long-held reply never pins the floor and
  * scanning always reaches newer messages.
+ *
+ * Unscoped, both values live on the assistant row and cover every thread.
+ * Scoped to one thread, they live in assistant_thread_floors, one row per
+ * assistant and thread, so a session that reads only its own conversation
+ * keeps its own place. Deliveries are shared either way: a message reaches
+ * exactly one reader, so run every session scoped, or one unscoped, not both.
  */
-async function readNewRounds(assistant: Assistant, limit: number): Promise<NewForAssistant> {
+async function readNewRounds(assistant: Assistant, limit: number, threadId?: string): Promise<NewForAssistant> {
   const candidateSelect = await roundCandidateSelect();
   const { data: cur, error: curErr } = await db().from("assistants").select("floor_seq, last_seen_seq, held_seqs").eq("name", assistant).single();
   if (curErr) fail(curErr);
-  const floor = Number(cur?.floor_seq ?? 0);
-  const heldBefore = ((cur?.held_seqs ?? []) as unknown[]).map(Number);
+  const lastSeenGlobal = Number(cur?.last_seen_seq ?? 0);
+  let floor = Number(cur?.floor_seq ?? 0);
+  let heldBefore = ((cur?.held_seqs ?? []) as unknown[]).map(Number);
+  if (threadId) {
+    const { data: tf, error: tfErr } = await db()
+      .from("assistant_thread_floors")
+      .select("floor_seq, held_seqs")
+      .eq("assistant", assistant)
+      .eq("thread_id", threadId)
+      .maybeSingle();
+    if (tfErr) throw new Error(`Reading one thread needs supabase/thread-sessions.sql: ${tfErr.message}`);
+    floor = Number(tf?.floor_seq ?? 0);
+    heldBefore = ((tf?.held_seqs ?? []) as unknown[]).map(Number);
+  }
 
-  // New candidates above the floor, plus everything previously held.
-  const { data, error } = await db()
+  // New candidates above the floor, plus everything previously held. A scoped
+  // read scans a wider window because its floor starts at zero and must first
+  // pass rows the unscoped reader may already have delivered.
+  let query = db()
     .from("messages")
     .select(candidateSelect)
     .gt("seq", floor)
     .neq("author", assistant)
     .order("seq", { ascending: true })
-    .limit(limit + 200);
+    .limit(limit + (threadId ? 500 : 200));
+  if (threadId) query = query.eq("thread_id", threadId);
+  const { data, error } = await query;
   if (error) fail(error);
   const candidates = (data ?? []).map((r) => asMessage(r) as Candidate);
 
@@ -446,8 +472,7 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   // in this read's output (i.e. beyond the limit).
   const heldBeforeSet = new Set(heldBefore);
   const heldNow = pool.filter((m) => !outSeqs.has(m.seq) && (held.has(m.seq) || heldBeforeSet.has(m.seq))).map((m) => m.seq);
-  const beyondLimit = candidates.filter((m) => !delivered.has(m.seq) && !held.has(m.seq) && !outSeqs.has(m.seq));
-  const newFloor = beyondLimit.length ? Math.min(...beyondLimit.map((m) => m.seq)) - 1 : candidates.length ? candidates[candidates.length - 1].seq : floor;
+  const newFloor = nextFloor(floor, candidates, delivered, held, outSeqs);
 
   // A compare request carries its question and both first answers, so a
   // restarted assistant can compare without re-reading the thread.
@@ -460,14 +485,26 @@ async function readNewRounds(assistant: Assistant, limit: number): Promise<NewFo
   const withContext = await attachCompareContext(messages);
 
   const forYou = withContext.filter((m) => m.for_you);
-  const lastSeen = Math.max(Number(cur?.last_seen_seq ?? 0), ...out.map((m) => m.seq));
-  await stampRead(assistant, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
+  const lastSeen = Math.max(lastSeenGlobal, ...out.map((m) => m.seq));
+  if (threadId) {
+    const { error: tfUpErr } = await db()
+      .from("assistant_thread_floors")
+      .upsert(
+        { assistant, thread_id: threadId, floor_seq: Math.max(floor, newFloor), held_seqs: heldNow, last_checked_at: new Date().toISOString() },
+        { onConflict: "assistant,thread_id" }
+      );
+    if (tfUpErr) fail(tfUpErr);
+    await stampRead(assistant, forYou, { last_seen_seq: lastSeen });
+  } else {
+    await stampRead(assistant, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
+  }
 
   return {
     messages: withContext,
     pending_for_you: forYou.length,
     cursor: lastSeen,
     held_for_you: held.size,
+    ...(threadId ? { thread_id: threadId } : {}),
     ...(forYou.some((m) => m.voice_mode) ? { response_guidance: BRIEF_AUDIO_GUIDANCE } : {}),
   };
 }
@@ -508,10 +545,29 @@ export async function assistantStatus(): Promise<AssistantStatus[]> {
   })) as AssistantStatus[];
 }
 
-/** Lets an assistant re-read from a given point, e.g. after a lost reply. */
-export async function rewind(assistant: Assistant, toSeq: number): Promise<void> {
+/**
+ * Lets an assistant re-read from a given point, e.g. after a lost reply.
+ * With a thread, only that thread's deliveries and place are rewound.
+ */
+export async function rewind(assistant: Assistant, toSeq: number, threadId?: string): Promise<void> {
   const to = Math.max(0, toSeq);
   if (await hasRounds()) {
+    if (threadId) {
+      const { data: seqs, error: seqErr } = await db().from("messages").select("seq").eq("thread_id", threadId).gte("seq", to);
+      if (seqErr) fail(seqErr);
+      const list = (seqs ?? []).map((s) => Number(s.seq));
+      if (list.length) {
+        const { error } = await db().from("assistant_deliveries").delete().eq("assistant", assistant).in("seq", list);
+        if (error) fail(error);
+      }
+      const { data: tf } = await db().from("assistant_thread_floors").select("floor_seq, held_seqs").eq("assistant", assistant).eq("thread_id", threadId).maybeSingle();
+      const held = ((tf?.held_seqs ?? []) as unknown[]).map(Number).filter((s) => s < to);
+      const { error: upErr } = await db()
+        .from("assistant_thread_floors")
+        .upsert({ assistant, thread_id: threadId, floor_seq: Math.min(Number(tf?.floor_seq ?? 0), Math.max(0, to - 1)), held_seqs: held }, { onConflict: "assistant,thread_id" });
+      if (upErr) fail(upErr);
+      return;
+    }
     const { error } = await db().from("assistant_deliveries").delete().eq("assistant", assistant).gte("seq", to);
     if (error) fail(error);
     const { data: cur } = await db().from("assistants").select("floor_seq, held_seqs").eq("name", assistant).single();

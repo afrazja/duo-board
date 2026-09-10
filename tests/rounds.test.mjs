@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasAnswered, hasLinkedAnswer, questionFor, withheldFrom, STALE_ROUND_MS } from "../src/lib/rounds.ts";
+import { hasAnswered, hasLinkedAnswer, nextFloor, questionFor, withheldFrom, STALE_ROUND_MS } from "../src/lib/rounds.ts";
+
+test("nextFloor passes delivered, held and returned rows, and stops below a row beyond the limit", () => {
+  const rows = [10, 11, 12, 13, 14].map((seq) => ({ seq }));
+  const set = (...s) => new Set(s);
+  // Everything accounted for: the floor passes every candidate.
+  assert.equal(nextFloor(9, rows, set(10, 11), set(12), set(13, 14)), 14);
+  // Row 13 neither delivered, held nor returned (beyond the limit): stop below it.
+  assert.equal(nextFloor(9, rows, set(10, 11), set(12), set(14)), 12);
+  // No candidates: the floor stays.
+  assert.equal(nextFloor(9, [], set(), set(), set()), 9);
+  // A held row does not pin the floor.
+  assert.equal(nextFloor(9, rows, set(11, 12, 13, 14), set(10), set()), 14);
+});
 
 test("hasLinkedAnswer needs a direct reply link; the safety valves do not count", () => {
   seq = 0;

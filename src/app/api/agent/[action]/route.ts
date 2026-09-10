@@ -4,11 +4,11 @@ import { listThreads, postMessage, readNew, readThread, rewind } from "@/lib/boa
 // A plain HTTP mirror of the MCP tools, for assistants or scripts that find
 // a curl easier than an MCP client. Same tokens, same functions.
 //
-//   GET  /api/agent/new                 -> unread messages, cursor advances
+//   GET  /api/agent/new[?thread=<uuid>] -> unread messages, cursor advances (one thread only, with thread)
 //   GET  /api/agent/threads             -> thread list
 //   GET  /api/agent/thread?id=<uuid>    -> latest messages of one thread
 //   POST /api/agent/post {thread_id, body, reply_to?}
-//   POST /api/agent/rewind {to_seq}
+//   POST /api/agent/rewind {to_seq, thread_id?}
 
 type Ctx = { params: Promise<{ action: string }> };
 
@@ -17,7 +17,10 @@ export async function GET(req: Request, ctx: Ctx) {
   if (!who) return unauthorized();
   const { action } = await ctx.params;
   try {
-    if (action === "new") return Response.json({ assistant: who, ...(await readNew(who)) });
+    if (action === "new") {
+      const thread = new URL(req.url).searchParams.get("thread") ?? undefined;
+      return Response.json({ assistant: who, ...(await readNew(who, 100, thread)) });
+    }
     if (action === "threads") return Response.json({ threads: await listThreads() });
     if (action === "thread") {
       const id = new URL(req.url).searchParams.get("id");
@@ -50,7 +53,7 @@ export async function POST(req: Request, ctx: Ctx) {
       return Response.json({ message });
     }
     if (action === "rewind") {
-      await rewind(who, Number(body.to_seq ?? 0));
+      await rewind(who, Number(body.to_seq ?? 0), typeof body.thread_id === "string" ? body.thread_id : undefined);
       return Response.json({ ok: true });
     }
     return Response.json({ error: "Unknown action" }, { status: 404 });
