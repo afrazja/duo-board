@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import type { AssistantStatus, Audience, Message, ThreadSummary } from "@/lib/board";
 
 // One conversation, two columns. The person's messages span both; each
@@ -22,6 +22,138 @@ function ago(iso: string | null | undefined, now: number): string {
 
 function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// Dictation uses the browser's own speech recognition (Chrome, Edge, Safari).
+// There is no server side to it: the browser turns speech into text and the
+// text lands in the draft like typing would.
+interface Recognition {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start(): void;
+  stop(): void;
+  onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
+  onend: (() => void) | null;
+}
+
+function speechCtor(): (new () => Recognition) | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+const LANG_KEY = "duo_dictation_lang";
+const LANGS: [string, string][] = [
+  ["", "Browser language"],
+  ["en-US", "English"],
+  ["fa-IR", "فارسی"],
+];
+
+// The chosen language lives in localStorage, read as an external store so the
+// server render (no storage) and the browser agree without an effect.
+const langListeners = new Set<() => void>();
+function readLang(): string {
+  try {
+    return localStorage.getItem(LANG_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+function writeLang(value: string) {
+  try {
+    localStorage.setItem(LANG_KEY, value);
+  } catch {}
+  langListeners.forEach((fn) => fn());
+}
+function subscribeLang(fn: () => void) {
+  langListeners.add(fn);
+  return () => {
+    langListeners.delete(fn);
+  };
+}
+
+function joinText(a: string, b: string): string {
+  const left = a.trimEnd();
+  const right = b.trim();
+  if (!right) return a;
+  return left ? `${left} ${right}` : right;
+}
+
+/**
+ * Press to talk, press again to stop. Final phrases are appended to the draft
+ * through onFinal; the phrase still being recognised is exposed as interim so
+ * the page can show it without putting it in the textarea yet.
+ */
+function useDictation(onFinal: (text: string) => void) {
+  const supported = useSyncExternalStore(
+    () => () => {},
+    () => speechCtor() !== null,
+    () => false
+  );
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [problem, setProblem] = useState("");
+  const lang = useSyncExternalStore(subscribeLang, readLang, () => "");
+  const rec = useRef<Recognition | null>(null);
+  const wanted = useRef(false);
+
+  const stop = useCallback(() => {
+    wanted.current = false;
+    rec.current?.stop();
+    rec.current = null;
+    setListening(false);
+    setInterim("");
+  }, []);
+
+  const start = useCallback(() => {
+    const Ctor = speechCtor();
+    if (!Ctor) return;
+    const r = new Ctor();
+    r.lang = lang || navigator.language;
+    r.continuous = true;
+    r.interimResults = true;
+    r.onresult = (e) => {
+      let pending = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const res = e.results[i];
+        if (res.isFinal) onFinal(res[0].transcript);
+        else pending += res[0].transcript;
+      }
+      setInterim(pending);
+    };
+    r.onerror = (e) => {
+      // Silence and network hiccups are routine; a denied microphone is not.
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setProblem("Microphone access was blocked. Allow it in the browser's site settings.");
+        wanted.current = false;
+      } else if (e.error !== "no-speech" && e.error !== "aborted") {
+        setProblem(`Dictation error: ${e.error}`);
+      }
+    };
+    r.onend = () => {
+      // Browsers end a session after a pause; keep going until the person stops it.
+      if (wanted.current) {
+        try {
+          r.start();
+          return;
+        } catch {}
+      }
+      rec.current = null;
+      setListening(false);
+      setInterim("");
+    };
+    rec.current = r;
+    wanted.current = true;
+    setProblem("");
+    setListening(true);
+    r.start();
+  }, [lang, onFinal]);
+
+  useEffect(() => () => stop(), [stop]);
+
+  return { supported, listening, interim, problem, lang, setLang: writeLang, toggle: () => (listening ? stop() : start()) };
 }
 
 // Text with ``` fences rendered as code, everything else kept as written.
@@ -105,6 +237,8 @@ export default function BoardPage() {
   const [error, setError] = useState("");
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
+  const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
+  const dictation = useDictation(appendToDraft);
 
   const loadThreads = useCallback(async () => {
     const res = await fetch("/api/threads");
@@ -302,11 +436,40 @@ export default function BoardPage() {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send();
             }}
             rows={3}
-            placeholder="Write to the board… (Ctrl+Enter to send)"
+            placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write to the board… (Ctrl+Enter to send)"}
             aria-label="Message"
-            className="mb-3 w-full resize-y rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+            className={`mb-2 w-full resize-y rounded-lg border bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-indigo-500 ${dictation.listening ? "border-rose-700" : "border-zinc-700"}`}
           />
+          {dictation.interim && <p className="mb-2 px-1 text-[13px] italic text-zinc-500">{dictation.interim}…</p>}
+          {dictation.problem && <p className="mb-2 px-1 text-[12px] text-rose-400">{dictation.problem}</p>}
           <div className="flex flex-wrap items-center gap-2">
+            {dictation.supported && (
+              <>
+                <button
+                  type="button"
+                  onClick={dictation.toggle}
+                  aria-pressed={dictation.listening}
+                  className={`flex items-center gap-2 rounded-full border px-3 py-1 text-[12px] ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
+                >
+                  <span className={`h-2 w-2 rounded-full ${dictation.listening ? "animate-pulse bg-rose-400" : "bg-zinc-600"}`} aria-hidden />
+                  {dictation.listening ? "Stop" : "Dictate"}
+                </button>
+                <select
+                  value={dictation.lang}
+                  onChange={(e) => dictation.setLang(e.target.value)}
+                  disabled={dictation.listening}
+                  aria-label="Dictation language"
+                  className="rounded-full border border-zinc-700 bg-zinc-950 px-2 py-1 text-[12px] text-zinc-400 outline-none disabled:opacity-50"
+                >
+                  {LANGS.map(([code, label]) => (
+                    <option key={code} value={code}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mx-1 h-4 w-px bg-zinc-800" aria-hidden />
+              </>
+            )}
             <span className="text-[12px] text-zinc-500">To:</span>
             {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => (
               <button
