@@ -10,7 +10,7 @@ import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
 import { AccountMenu } from "@/components/account-menu";
-import { groupRows, mergeMessages, playableMessages, roundState, type BoardMessage } from "@/components/round-model";
+import { groupRows, mergeMessages, playableMessages, roundState, withStops, type BoardMessage, type StopMark } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -206,6 +206,13 @@ export default function BoardPage() {
   const [comparing, setComparing] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
   const compareRequests = useRef(new Set<string>());
+  // Stops the person made in this conversation; saving and failed ones are keyed "<message id>:<assistant>".
+  const [stops, setStops] = useState<StopMark[]>([]);
+  const [stopsAvailable, setStopsAvailable] = useState(false);
+  const [stopping, setStopping] = useState<string[]>([]);
+  const [stopErrors, setStopErrors] = useState<Record<string, string>>({});
+  const stopsRef = useRef<StopMark[]>([]);
+  const stopRequests = useRef(new Set<string>());
   const loaded = useRef<{ threadId: string | null; messages: BoardMessage[] }>({ threadId: null, messages: [] });
   const briefSaveVersion = useRef(0);
   const answerModeSaveVersion = useRef(0);
@@ -226,9 +233,22 @@ export default function BoardPage() {
     loaded.current.messages = next;
     // Unrevealed text never enters the audio queue. Previously held answers
     // become eligible together when the second assistant's answer arrives.
-    speechPlayer.ingest(playableMessages(groupRows(next), serverNow ? Date.parse(serverNow) : Date.now()), serverNow);
+    speechPlayer.ingest(playableMessages(groupRows(withStops(next, stopsRef.current)), serverNow ? Date.parse(serverNow) : Date.now()), serverNow);
     setMessages(next);
   }, [speechPlayer]);
+
+  const acceptStops = useCallback((threadId: string, incoming: StopMark[]) => {
+    if (loaded.current.threadId !== threadId) return;
+    const key = (stop: StopMark) => `${stop.question_id}:${stop.assistant}`;
+    const known = new Set(stopsRef.current.map(key));
+    const fresh = incoming.filter((stop) => !known.has(key(stop))).map((stop) => ({ question_id: stop.question_id, assistant: stop.assistant }));
+    if (!fresh.length) return;
+    stopsRef.current = [...stopsRef.current, ...fresh];
+    setStops(stopsRef.current);
+    // A stop ends a Separate round, which can release the other assistant's
+    // held answer; run the messages through playback again so it is heard.
+    acceptMessages(threadId, []);
+  }, [acceptMessages]);
 
   const loadThreads = useCallback(async () => {
     try {
@@ -268,6 +288,10 @@ export default function BoardPage() {
     setAwayFromLatest(false);
     setNewRepliesBelow(false);
     setMessages([]);
+    stopsRef.current = [];
+    setStops([]);
+    setStopsAvailable(false);
+    setStopErrors({});
     const poll = async () => {
       if (polling) return;
       polling = true;
@@ -280,7 +304,7 @@ export default function BoardPage() {
           router.replace("/login");
           return;
         }
-        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; missing?: boolean; now?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean };
+        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; missing?: boolean; now?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean; stops?: StopMark[]; stops_available?: boolean };
         if (stopped) return;
         if (data.missing) {
           stopped = true;
@@ -301,6 +325,8 @@ export default function BoardPage() {
         }
         setError("");
         if (data.assistants) setAssistants(data.assistants);
+        if (typeof data.stops_available === "boolean") setStopsAvailable(data.stops_available);
+        if (Array.isArray(data.stops)) acceptStops(activeId, data.stops);
         if (typeof data.brief_audio === "boolean" && versionAtPoll % 2 === 0 && versionAtPoll === briefSaveVersion.current) {
           speechPlayer.setBrief(data.brief_audio);
           setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.brief_audio !== data.brief_audio ? { ...thread, brief_audio: data.brief_audio! } : thread));
@@ -325,7 +351,7 @@ export default function BoardPage() {
       stopped = true;
       clearInterval(t);
     };
-  }, [activeId, speechPlayer, acceptMessages, loadThreads, stopDictation, router]);
+  }, [activeId, speechPlayer, acceptMessages, acceptStops, loadThreads, stopDictation, router]);
 
   // Follow new messages only while the reader is already at the bottom.
   useEffect(() => {
@@ -400,6 +426,29 @@ export default function BoardPage() {
     }
   }
 
+  async function stopAnswer(question: BoardMessage, who: "claude" | "chatgpt") {
+    const key = `${question.id}:${who}`;
+    if (stopRequests.current.has(key)) return;
+    stopRequests.current.add(key);
+    setStopping((current) => [...current, key]);
+    setStopErrors((current) => ({ ...current, [key]: "" }));
+    try {
+      const res = await fetch("/api/stops", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question_id: question.id, assistant: who }) });
+      if (res.status === 401) {
+        router.replace("/login");
+        return;
+      }
+      const data = await res.json() as { stop?: StopMark; error?: string };
+      if (!res.ok || !data.stop) throw new Error(data.error ?? "Could not stop this answer. Try again.");
+      acceptStops(question.thread_id, [data.stop]);
+    } catch (e) {
+      setStopErrors((current) => ({ ...current, [key]: (e as Error).message }));
+    } finally {
+      stopRequests.current.delete(key);
+      setStopping((current) => current.filter((k) => k !== key));
+    }
+  }
+
   async function createThread(e: FormEvent) {
     e.preventDefault();
     const title = newTitle.trim();
@@ -437,7 +486,7 @@ export default function BoardPage() {
     finally { briefSaveVersion.current += 1; setSavingBrief(false); }
   }
 
-  const rows = groupRows(messages);
+  const rows = groupRows(withStops(messages, stops));
   async function changeAnswerMode(blind: boolean) {
     if (!activeId || answerModeSaveVersion.current % 2 !== 0) return;
     const threadId = activeId;
@@ -594,7 +643,7 @@ export default function BoardPage() {
                     <Body text={row.user.body} />
                   </div>
                 )}
-                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} stopAvailable={stopsAvailable} stopping={stopping} stopErrors={stopErrors} onStop={(question, who) => void stopAnswer(question, who)} />
               </section>
             ))}
           </div>

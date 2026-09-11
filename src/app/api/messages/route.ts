@@ -1,4 +1,4 @@
-import { assistantStatus, findCompare, getThreadPreferences, getMessages, postMessage, type Audience } from "@/lib/board";
+import { assistantStatus, findCompare, getThreadPreferences, getMessages, postMessage, threadStops, type Audience } from "@/lib/board";
 import { authErrorResponse, requireUser } from "@/lib/account-auth";
 
 const AUDIENCES: Audience[] = ["both", "claude", "chatgpt", "none"];
@@ -12,8 +12,8 @@ export async function GET(req: Request) {
   if (!thread) return Response.json({ error: "thread is required" }, { status: 400 });
   try {
     const user = await requireUser();
-    const [messages, assistants, preferences] = await Promise.all([getMessages(user.id, thread, Number.isFinite(after) ? after : 0), assistantStatus(user.id), getThreadPreferences(user.id, thread)]);
-    return Response.json({ messages, assistants, ...preferences, now: new Date().toISOString() });
+    const [messages, assistants, preferences, stops] = await Promise.all([getMessages(user.id, thread, Number.isFinite(after) ? after : 0), assistantStatus(user.id), getThreadPreferences(user.id, thread), threadStops(user.id, thread)]);
+    return Response.json({ messages, assistants, ...preferences, stops: stops.stops, stops_available: stops.available, now: new Date().toISOString() });
   } catch (e) {
     if ((e as Error).message === "Conversation not found") return Response.json({ missing: true, messages: [] }, { status: 404 });
     return authErrorResponse(e) ?? Response.json({ error: (e as Error).message }, { status: 500 });

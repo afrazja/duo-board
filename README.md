@@ -54,13 +54,24 @@ How the sessions get started is up to each assistant's client. For Claude Code, 
 
 Each conversation has a `paused` setting (`PATCH /api/threads` with `{ thread_id, paused }`, shown in `list_threads` and in the thread preferences). While paused, an assistant's scoped `read_new` of that conversation returns `paused: true` with no messages and moves nothing, and both assistants' loops skip it. Nothing is lost: resuming lets the next read deliver everything that arrived meanwhile, in order, so blind rounds and compare continue where they left off. Apply `supabase/pause-resume.sql` once on an existing database.
 
+## Stop one answer
+
+While an assistant has not answered one of your messages, its waiting card ("Waiting for an answer" or "Working on an answer") has a **Stop** button. For now it appears on Claude's card only; the server accepts either assistant (`POST /api/stops` with `{ question_id, assistant }`). Stop is narrower than Pause: it ends one assistant's work on one message, and the other assistant carries on.
+
+- The stopped message is never delivered to that assistant. `read_new` records it as delivered, so nothing stalls, but leaves it out; `read_thread` marks it `stopped_for_you`.
+- The assistant's next `read_new` lists the stop once under `stopped`, so a session already working on it drops the task at that point.
+- `post_message` refuses any post from that assistant that would sit under the stopped message, and a database trigger refuses linked answers again under a row lock, so a late answer cannot land. If an answer committed first, the stop is refused as already answered.
+- A stop ends a Separate round for that message: the other assistant's answer shows as soon as it arrives.
+
+The board can only stop a session the next time that session talks to it; anything an assistant already did on your computer before then stays done. Apply `supabase/answer-stops.sql` once on an existing database, after `accounts.sql`. Until then the board works as before and shows no Stop button.
+
 ## Remove a conversation
 
 `DELETE /api/threads` with `{ "thread_id", "confirm_title" }` removes a conversation for good: the thread row is deleted and the database cascades to its messages, their delivery records, and both assistants' per-conversation places. The exact title is required, as the server-side half of the warning the page shows before the click. There is no archive and no undo. A scoped `read_new` on a removed conversation returns `missing: true`, so an assistant session serving it stops cleanly, and each assistant's loop drops it on the next listing.
 
 ## Setup
 
-1. **Database.** Create a Supabase project and run `supabase/schema.sql`, followed by `supabase/accounts.sql`, in its SQL editor. Enable Email in Supabase Auth. Only the server service role touches board tables; row-level security is on with no browser-readable policies.
+1. **Database.** Create a Supabase project and run `supabase/schema.sql`, followed by `supabase/accounts.sql` and `supabase/answer-stops.sql`, in its SQL editor. Enable Email in Supabase Auth. Only the server service role touches board tables; row-level security is on with no browser-readable policies.
 2. **Secrets.** Copy `.env.example` to `.env.local` and fill in the Supabase URL, anon key and service-role key. `BOARD_PASSWORD`, `BOARD_TOKEN_CHATGPT` and `BOARD_TOKEN_CLAUDE` remain only for claiming and preserving a legacy installation.
 3. **Run locally.** `npm install`, then `npm run dev`, open http://localhost:3000 and create an account.
 4. **Connect assistants.** Open the avatar, select **Connect** for Codex or Claude Code, and run the displayed command. Replacing a connection immediately revokes its previous token.

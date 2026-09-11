@@ -49,6 +49,16 @@ export function questionFor(m: RoundMessage, thread: RoundMessage[], depth = 0):
 }
 
 /**
+ * The person's message a new post would sit under on the page: the question
+ * its reply chain leads to or, without a link, the latest person's message in
+ * the thread. A stop protects exactly that position.
+ */
+export function targetQuestion(threadId: string, replyTo: string | null, thread: RoundMessage[]): RoundMessage | null {
+  const draft: RoundMessage = { seq: Number.POSITIVE_INFINITY, id: "", thread_id: threadId, author: "claude", addressed_to: "none", reply_to: replyTo, created_at: "" };
+  return questionFor(draft, thread);
+}
+
+/**
  * Where the delivery floor moves after a read. Everything at or below the
  * floor is delivered, the reader's own, or remembered as held. It stops just
  * below the first candidate that is none of those (a row beyond this read's
@@ -88,7 +98,9 @@ export function withheldFrom(
   who: Assistant,
   candidates: RoundMessage[],
   byThread: Map<string, RoundMessage[]>,
-  now = Date.now()
+  now = Date.now(),
+  /** Ids of questions the person stopped for `who`: a stop ends that round for `who`. */
+  stopped: Set<string> = new Set()
 ): Set<number> {
   const held = new Set<number>();
   for (const m of candidates) {
@@ -102,6 +114,7 @@ export function withheldFrom(
       continue;
     }
     if (q.addressed_to !== "both" || q.blind_round === false) continue;
+    if (stopped.has(q.id)) continue;
     if (!hasAnswered(who, q, thread, now)) held.add(m.seq);
   }
   return held;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupRows, mergeMessages, playableMessages, roundState, hasBothAnswers, hasFirstAnswer, openingExcerpt } from '../src/components/round-model.ts';
+import { groupRows, mergeMessages, playableMessages, roundState, hasBothAnswers, hasFirstAnswer, openingExcerpt, withStops, isStopped } from '../src/components/round-model.ts';
 
 const message = (seq, author, extra = {}) => ({ seq, id: String(seq), thread_id: 'thread', author, addressed_to: author === 'user' ? 'both' : 'none', body: `Reply ${seq}`, spoken_summary: null, reply_to: null, kind: 'message', created_at: new Date(seq * 1000).toISOString(), ...extra });
 
@@ -78,4 +78,27 @@ test('opening excerpts strip code and link destinations and mark truncation hone
   assert.equal(text, 'Recommendation Read the documentation. Then…');
   assert.ok(!text.includes('example.com'));
   assert.ok(!text.includes('secretCode'));
+});
+
+test('a stop marks only its own message and assistant', () => {
+  const marked = withStops([message(1, 'user'), message(2, 'user'), message(3, 'claude')], [{ question_id: '1', assistant: 'claude' }, { question_id: '1', assistant: 'claude' }, { question_id: '3', assistant: 'claude' }]);
+  assert.deepEqual(marked[0].stopped_for, ['claude']);
+  assert.equal(marked[1].stopped_for, undefined);
+  assert.equal(marked[2].stopped_for, undefined, "only the person's messages can be stopped");
+  assert.equal(isStopped(marked[0], 'claude'), true);
+  assert.equal(isStopped(marked[0], 'chatgpt'), false);
+});
+
+test("stopping Claude ends a separate round: ChatGPT's held answer is shown and played, without claiming both answered", () => {
+  const first = [message(1, 'user'), message(2, 'chatgpt', { reply_to: '1' })];
+  const before = groupRows(first);
+  assert.deepEqual(roundState(before[0], before, 4000), { held: true, paired: false });
+  const rows = groupRows(withStops(first, [{ question_id: '1', assistant: 'claude' }]));
+  assert.deepEqual(roundState(rows[0], rows, 4000), { held: false, paired: false });
+  assert.deepEqual(playableMessages(rows, 4000).map(m => m.seq), [1, 2]);
+});
+
+test('with no stops the messages pass through unchanged', () => {
+  const list = [message(1, 'user')];
+  assert.equal(withStops(list, []), list);
 });

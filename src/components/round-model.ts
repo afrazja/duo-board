@@ -1,6 +1,9 @@
 import type { Message } from "../lib/board";
 
-export type BoardMessage = Message & { kind?: "message" | "compare" };
+type Side = "claude" | "chatgpt";
+/** stopped_for: the assistants the person stopped on this message, from the page's stop list. */
+export type BoardMessage = Message & { kind?: "message" | "compare"; stopped_for?: Side[] };
+export interface StopMark { question_id: string; assistant: Side }
 export type Replies = { claude: BoardMessage[]; chatgpt: BoardMessage[] };
 export interface BoardRow extends Replies {
   key: string;
@@ -12,6 +15,21 @@ export function mergeMessages(previous: BoardMessage[], incoming: BoardMessage[]
   const byId = new Map(previous.map((message) => [message.id, message]));
   for (const message of incoming) byId.set(message.id, message);
   return [...byId.values()].sort((a, b) => a.seq - b.seq);
+}
+
+/** Marks each of the person's messages with the assistants the person stopped on it. */
+export function withStops(messages: BoardMessage[], stops: StopMark[]): BoardMessage[] {
+  if (!stops.length) return messages;
+  const byQuestion = new Map<string, Set<Side>>();
+  for (const stop of stops) byQuestion.set(stop.question_id, (byQuestion.get(stop.question_id) ?? new Set<Side>()).add(stop.assistant));
+  return messages.map((message) => {
+    const who = message.author === "user" ? byQuestion.get(message.id) : undefined;
+    return who ? { ...message, stopped_for: [...who] } : message;
+  });
+}
+
+export function isStopped(question: BoardMessage | undefined, who: Side): boolean {
+  return Boolean(question?.stopped_for?.includes(who));
 }
 
 /** Explicit reply links take precedence over arrival order, including follow-ups to replies. */
@@ -65,6 +83,8 @@ export function roundState(row: BoardRow, rows: BoardRow[], now: number) {
   const answered = (who: "claude" | "chatgpt") => hasFirstAnswer(row, who);
   const paired = answered("claude") && answered("chatgpt");
   if (question.blind_round === false) return { paired, held: false };
+  // A stop ends the round: the other assistant's answer shows as it arrives.
+  if (isStopped(question, "claude") || isStopped(question, "chatgpt")) return { paired, held: false };
   const expired = now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000;
   const movedOn = (who: "claude" | "chatgpt") => answered(who) || rows.some((later) => later.user && later.user.seq > question.seq && later[who].some((message) => message.reply_to === later.user!.id));
   return { paired, held: !paired && !expired && !(movedOn("claude") && movedOn("chatgpt")) };

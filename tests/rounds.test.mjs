@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasAnswered, hasLinkedAnswer, nextFloor, questionFor, withheldFrom, STALE_ROUND_MS } from "../src/lib/rounds.ts";
+import { hasAnswered, hasLinkedAnswer, nextFloor, questionFor, targetQuestion, withheldFrom, STALE_ROUND_MS } from "../src/lib/rounds.ts";
 
 test("nextFloor passes delivered, held and returned rows, and stops below a row beyond the limit", () => {
   const rows = [10, 11, 12, 13, 14].map((seq) => ({ seq }));
@@ -197,4 +197,27 @@ test("Threads are independent: a reply in one thread is judged against that thre
   const mineA = msg("claude", { replyTo: "qA", thread: "A" });
   const gptB = msg("chatgpt", { replyTo: "qB", thread: "B" });
   assert.deepEqual([...withheldFrom("claude", [gptB], byThread(qA, qB, mineA, gptB), T0 + 60_000)], [gptB.seq]);
+});
+
+test("targetQuestion follows a reply chain to the person's message, or falls back to the latest one", () => {
+  seq = 0;
+  const q1 = msg("user", { id: "q1" });
+  const mine = msg("claude", { id: "mine", replyTo: "q1" });
+  const q2 = msg("user", { id: "q2" });
+  const thread = [q1, mine, q2];
+  assert.equal(targetQuestion("t1", "q1", thread)?.id, "q1");
+  assert.equal(targetQuestion("t1", "mine", thread)?.id, "q1");
+  assert.equal(targetQuestion("t1", null, thread)?.id, "q2");
+  assert.equal(targetQuestion("t1", "missing", thread), null);
+  assert.equal(targetQuestion("t2", null, thread), null);
+});
+
+test("A stop releases the other assistant's answer to the stopped assistant, and only for that question", () => {
+  seq = 0;
+  const q = msg("user", { id: "q" });
+  const gpt = msg("chatgpt", { replyTo: "q" });
+  const thread = byThread(q, gpt);
+  assert.deepEqual([...withheldFrom("claude", [gpt], thread, T0 + 60_000)], [gpt.seq]);
+  assert.deepEqual([...withheldFrom("claude", [gpt], thread, T0 + 60_000, new Set(["q"]))], []);
+  assert.deepEqual([...withheldFrom("claude", [gpt], thread, T0 + 60_000, new Set(["another"]))], [gpt.seq]);
 });

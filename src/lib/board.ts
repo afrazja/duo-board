@@ -1,7 +1,7 @@
 import { db } from "./db";
 import type { Assistant } from "./agent-auth";
 import { BRIEF_AUDIO_GUIDANCE, normalizeSpokenReply } from "./spoken-reply";
-import { hasLinkedAnswer, nextFloor, withheldFrom, type RoundMessage } from "./rounds";
+import { hasLinkedAnswer, nextFloor, targetQuestion, withheldFrom, type RoundMessage } from "./rounds";
 
 export type Author = "user" | Assistant;
 export type Audience = "both" | Assistant | "none";
@@ -20,6 +20,22 @@ export interface Message {
   created_at: string;
   kind: Kind;
   blind_round: boolean;
+  /** Only on an assistant's read_thread: the person stopped this message for the reader, so it must not be answered. */
+  stopped_for_you?: boolean;
+}
+
+/** The person stopped one assistant's work on one of their messages. */
+export interface QuestionStop {
+  question_id: string;
+  assistant: Assistant;
+  stopped_at: string;
+}
+
+/** A stop as an assistant's read reports it, once, so a session working on that message drops it. */
+export interface StopNotice {
+  question_id: string;
+  thread_id: string;
+  stopped_at: string;
 }
 
 export interface ThreadSummary {
@@ -93,6 +109,26 @@ function hasAnswerModes(): Promise<boolean> {
   }
   return answerModesProbe.value;
 }
+
+// supabase/answer-stops.sql adds question_stops, the stop_board_question
+// function and the trigger that refuses answers to a stopped message.
+// Probed like the other migrations: without it the board behaves as before
+// and the page offers no Stop button.
+let stopsProbe: { at: number; value: Promise<boolean> } | null = null;
+export function hasStops(): Promise<boolean> {
+  if (!stopsProbe || Date.now() - stopsProbe.at > 60_000) {
+    const value = (async () => {
+      const { error } = await db().from("question_stops").select("question_id").limit(1);
+      return !error;
+    })();
+    const probe = { at: Date.now(), value };
+    stopsProbe = probe;
+    void value.then((ok) => { if (ok) probe.at = Number.POSITIVE_INFINITY; });
+  }
+  return stopsProbe.value;
+}
+
+const STOPPED_POST = "The person stopped this question for you. Drop the task: do not answer it or post about it. They can ask again whenever they like.";
 
 async function columns(): Promise<string> {
   const base = (await hasRounds()) ? `${BASE_COLUMNS}, kind` : BASE_COLUMNS;
@@ -260,9 +296,12 @@ export async function readThread(ownerId: string | null, threadId: string, limit
     .limit(limit);
   if (error) fail(error);
   const rows = (data ?? []).map((row) => asMessage(row)).reverse();
-  if (!viewer || !(await hasRounds())) return rows;
-  const held = withheldFrom(viewer, rows, new Map([[threadId, await roundContext(threadId, rows)]]));
-  return rows.filter((m) => !held.has(m.seq));
+  if (!viewer) return rows;
+  const stopped = await stoppedIn(viewer, ownerId, [threadId]);
+  const marked = stopped.size ? rows.map((m): Message => (m.author === "user" && stopped.has(m.id) ? { ...m, stopped_for_you: true } : m)) : rows;
+  if (!(await hasRounds())) return marked;
+  const held = withheldFrom(viewer, rows, new Map([[threadId, await roundContext(threadId, rows)]]), Date.now(), stopped);
+  return marked.filter((m) => !held.has(m.seq));
 }
 
 /** The existing compare request for a question in a thread, if one was already made. */
@@ -318,6 +357,18 @@ export async function postMessage(input: {
   if (input.author !== "user" && state.paused) {
     throw new Error("This conversation is paused; assistants cannot post until it is resumed");
   }
+  // A message the person stopped for this assistant takes no post from it
+  // that would sit under that message: a linked answer, a reply further down
+  // its chain, or an unlinked note while it is the latest message. The
+  // database trigger enforces the linked cases again, under a lock.
+  if (input.author !== "user") {
+    const stopped = await stoppedIn(input.author, input.ownerId, [input.threadId]);
+    if (stopped.size) {
+      const replyTo = input.replyTo ?? null;
+      const question = targetQuestion(input.threadId, replyTo, await roundContext(input.threadId, [{ reply_to: replyTo }]));
+      if (question && stopped.has(question.id)) throw new Error(STOPPED_POST);
+    }
+  }
   const compare = input.kind === "compare" && (await hasRounds());
   if (compare) {
     if (!input.replyTo) throw new Error("A compare request needs reply_to");
@@ -369,6 +420,8 @@ export interface NewForAssistant {
   paused?: boolean;
   /** True when the scoped conversation no longer exists (removed): stop serving it. */
   missing?: boolean;
+  /** Stops not reported before: messages the person stopped for this assistant. Drop any task on them. */
+  stopped?: StopNotice[];
   response_guidance?: string;
 }
 
@@ -535,14 +588,20 @@ async function readNewRounds(assistant: Assistant, ownerId: string | null, limit
   for (const threadId of threadIds) {
     byThread.set(threadId, await roundContext(threadId, pool.filter((m) => m.thread_id === threadId)));
   }
-  const held = withheldFrom(assistant, pool, byThread);
+  // A message the person stopped for this assistant ends its round for this
+  // assistant: the other assistant's answer to it is no longer held back.
+  const stopped = await stoppedIn(assistant, ownerId, [...new Set(pool.map((m) => m.thread_id))]);
+  const held = withheldFrom(assistant, pool, byThread, Date.now(), stopped);
 
-  const out = pool.filter((m) => !held.has(m.seq)).slice(0, limit);
-  const outSeqs = new Set(out.map((m) => m.seq));
-  if (out.length) {
+  // A stopped message is recorded as delivered, so the floor moves past it,
+  // but it is never handed to this assistant.
+  const passed = pool.filter((m) => !held.has(m.seq)).slice(0, limit);
+  const out = passed.filter((m) => !(m.author === "user" && stopped.has(m.id)));
+  const outSeqs = new Set(passed.map((m) => m.seq));
+  if (passed.length) {
     const { error: insErr } = await db()
       .from("assistant_deliveries")
-      .upsert(out.map((m) => ({ owner_id: ownerId, assistant, seq: m.seq })), { onConflict: "owner_id,assistant,seq", ignoreDuplicates: true });
+      .upsert(passed.map((m) => ({ owner_id: ownerId, assistant, seq: m.seq })), { onConflict: "owner_id,assistant,seq", ignoreDuplicates: true });
     if (insErr) fail(insErr);
   }
 
@@ -566,7 +625,7 @@ async function readNewRounds(assistant: Assistant, ownerId: string | null, limit
   const withContext = await attachCompareContext(messages);
 
   const forYou = withContext.filter((m) => m.for_you);
-  const lastSeen = Math.max(lastSeenGlobal, ...out.map((m) => m.seq));
+  const lastSeen = Math.max(lastSeenGlobal, ...passed.map((m) => m.seq));
   if (threadId) {
     const { error: tfUpErr } = await db()
       .from("assistant_thread_floors")
@@ -580,12 +639,14 @@ async function readNewRounds(assistant: Assistant, ownerId: string | null, limit
     await stampRead(assistant, ownerId, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
   }
 
+  const notices = await takeStopNotices(assistant, ownerId, threadId);
   return {
     messages: withContext,
     pending_for_you: forYou.length,
     cursor: lastSeen,
     held_for_you: held.size,
     ...(threadId ? { thread_id: threadId } : {}),
+    ...(notices.length ? { stopped: notices } : {}),
     ...(forYou.some((m) => m.voice_mode) ? { response_guidance: BRIEF_AUDIO_GUIDANCE } : {}),
   };
 }
@@ -611,6 +672,70 @@ async function attachCompareContext(messages: Decorated[]): Promise<NewForAssist
     const answers = ctx.answer_ids.map((id) => byId.get(id)).filter((x): x is Message => !!x).sort((a, b) => a.seq - b.seq);
     return { ...rest, compare_context: { question, answers } };
   });
+}
+
+/** Ids of the person's messages in these conversations that the person stopped for `assistant`. */
+async function stoppedIn(assistant: Assistant, ownerId: string | null, threadIds: string[]): Promise<Set<string>> {
+  if (!threadIds.length || !(await hasStops())) return new Set();
+  let query = db().from("question_stops").select("question_id").eq("assistant", assistant).in("thread_id", threadIds);
+  query = ownerId ? query.eq("owner_id", ownerId) : query.is("owner_id", null);
+  const { data, error } = await query;
+  if (error) fail(error);
+  return new Set((data ?? []).map((s) => String(s.question_id)));
+}
+
+/** The stops in one conversation, for the page; available is false until answer-stops.sql has run. */
+export async function threadStops(ownerId: string, threadId: string): Promise<{ available: boolean; stops: QuestionStop[] }> {
+  if (!(await hasStops())) return { available: false, stops: [] };
+  const { data, error } = await db()
+    .from("question_stops")
+    .select("question_id, assistant, stopped_at")
+    .eq("thread_id", threadId)
+    .eq("owner_id", ownerId)
+    .order("stopped_at", { ascending: true });
+  if (error) fail(error);
+  return { available: true, stops: (data ?? []) as QuestionStop[] };
+}
+
+export type StopResult =
+  | { stopped: true; question_id: string; assistant: Assistant; stopped_at: string }
+  | { stopped: false; reason: "not_found" | "not_addressed" | "already_answered" | "invalid_assistant" };
+
+/**
+ * Stop one assistant's work on one of the person's messages. The database
+ * locks the message while it records the stop, so an answer arriving at the
+ * same moment either lands first (and the stop is refused as already
+ * answered) or is refused. Stopping twice is harmless.
+ */
+export async function stopQuestion(ownerId: string, questionId: string, assistant: Assistant): Promise<StopResult> {
+  if (!(await hasStops())) throw new Error("Stop needs the database change in supabase/answer-stops.sql");
+  const { data, error } = await db().rpc("stop_board_question", { p_owner_id: ownerId, p_question_id: questionId, p_assistant: assistant });
+  if (error) fail(error);
+  return data as StopResult;
+}
+
+/**
+ * Stops this assistant has not been told about yet, in one conversation when
+ * scoped, marked as told. Each is reported once; a session already working on
+ * one of these messages drops it.
+ */
+async function takeStopNotices(assistant: Assistant, ownerId: string | null, threadId?: string): Promise<StopNotice[]> {
+  if (!(await hasStops())) return [];
+  let query = db().from("question_stops").select("question_id, thread_id, stopped_at").eq("assistant", assistant).is("notified_at", null);
+  if (threadId) query = query.eq("thread_id", threadId);
+  query = ownerId ? query.eq("owner_id", ownerId) : query.is("owner_id", null);
+  const { data, error } = await query.order("stopped_at", { ascending: true }).limit(50);
+  if (error) fail(error);
+  const notices = (data ?? []) as StopNotice[];
+  if (notices.length) {
+    const { error: markErr } = await db()
+      .from("question_stops")
+      .update({ notified_at: new Date().toISOString() })
+      .eq("assistant", assistant)
+      .in("question_id", notices.map((n) => n.question_id));
+    if (markErr) fail(markErr);
+  }
+  return notices;
 }
 
 export async function assistantStatus(ownerId: string): Promise<AssistantStatus[]> {
