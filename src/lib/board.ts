@@ -194,11 +194,46 @@ export async function getThreadPreferences(threadId: string) {
   return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-/** Whether a conversation is paused. A database without the column answers false. */
-async function isPaused(threadId: string): Promise<boolean> {
+/** Whether a conversation exists and whether it is paused. A database without the column answers not paused. */
+async function threadState(threadId: string): Promise<{ exists: boolean; paused: boolean }> {
   const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
   if (error) fail(error);
-  return (data as { paused?: boolean } | null)?.paused === true;
+  const row = data as { paused?: boolean } | null;
+  return { exists: !!row, paused: row?.paused === true };
+}
+
+async function isPaused(threadId: string): Promise<boolean> {
+  return (await threadState(threadId)).paused;
+}
+
+export type DeleteThreadResult = { deleted: true; thread_id: string } | { deleted: false; reason: "not_found" | "title_mismatch" };
+
+/**
+ * Remove a conversation for good. The thread row goes, and the database
+ * cascades to its messages, their delivery records, and both assistants'
+ * per-conversation places. Nothing is archived; there is nothing to restore.
+ * The caller must supply the exact title, the server-side half of the
+ * warning the page shows. Stale held-reply seqs on the assistant rows are
+ * pruned afterwards so they never point at rows that no longer exist.
+ */
+export async function deleteThread(threadId: string, confirmTitle: string): Promise<DeleteThreadResult> {
+  const { data: thread, error } = await db().from("threads").select("id, title").eq("id", threadId).maybeSingle();
+  if (error) fail(error);
+  if (!thread) return { deleted: false, reason: "not_found" };
+  if ((thread.title as string).trim() !== confirmTitle.trim()) return { deleted: false, reason: "title_mismatch" };
+  const { error: delErr } = await db().from("threads").delete().eq("id", threadId);
+  if (delErr) fail(delErr);
+  // Prune held seqs that pointed into the removed conversation.
+  const { data: rows } = await db().from("assistants").select("name, held_seqs");
+  for (const a of (rows ?? []) as { name: Assistant; held_seqs?: unknown[] }[]) {
+    const held = (a.held_seqs ?? []).map(Number).filter((n) => Number.isFinite(n));
+    if (!held.length) continue;
+    const { data: alive } = await db().from("messages").select("seq").in("seq", held);
+    const keep = new Set((alive ?? []).map((m) => Number(m.seq)));
+    const pruned = held.filter((s) => keep.has(s));
+    if (pruned.length !== held.length) await stampAssistant(a.name, { held_seqs: pruned });
+  }
+  return { deleted: true, thread_id: threadId };
 }
 
 export async function getMessages(threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
@@ -332,6 +367,8 @@ export interface NewForAssistant {
   thread_id?: string;
   /** True when the scoped conversation is paused: nothing was delivered and nothing was stamped. */
   paused?: boolean;
+  /** True when the scoped conversation no longer exists (removed): stop serving it. */
+  missing?: boolean;
   response_guidance?: string;
 }
 
@@ -422,10 +459,13 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
   const lastSeenGlobal = Number(cur?.last_seen_seq ?? 0);
   let floor = Number(cur?.floor_seq ?? 0);
   let heldBefore = ((cur?.held_seqs ?? []) as unknown[]).map(Number);
-  if (threadId && (await isPaused(threadId))) {
+  if (threadId) {
+    const state = await threadState(threadId);
+    // Removed: there is nothing to serve; tell the session to stop cleanly.
+    if (!state.exists) return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, missing: true };
     // Paused: deliver nothing and move nothing, so resuming picks up
     // everything that arrived meanwhile, in order.
-    return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, paused: true };
+    if (state.paused) return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, paused: true };
   }
   if (threadId) {
     const { data: tf, error: tfErr } = await db()
