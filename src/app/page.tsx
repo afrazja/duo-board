@@ -7,6 +7,8 @@ import { useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 import { Body } from "@/components/message-body";
 import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
+import { RemoveConversation } from "@/components/remove-conversation";
+import { RemovalStatus } from "@/components/removal-status";
 import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
@@ -170,7 +172,7 @@ function useDictation(onFinal: (text: string) => void) {
 
   useEffect(() => () => stop(), [stop]);
 
-  return { supported, listening, interim, problem, lang, setLang: writeLang, toggle: () => (listening ? stop() : start()) };
+  return { supported, listening, interim, problem, lang, setLang: writeLang, stop, toggle: () => (listening ? stop() : start()) };
 }
 
 // Average time from the person's message to each assistant's first reply,
@@ -233,6 +235,9 @@ export default function BoardPage() {
   const [pauseError, setPauseError] = useState("");
   const [awayFromLatest, setAwayFromLatest] = useState(false);
   const [newRepliesBelow, setNewRepliesBelow] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ id: string; title: string } | null>(null);
+  const [recentRemoval, setRecentRemoval] = useState<string | null>(null);
+  const removedIds = useRef(new Set<string>());
   const [comparing, setComparing] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
   const compareRequests = useRef(new Set<string>());
@@ -245,6 +250,7 @@ export default function BoardPage() {
   const followingLatest = useRef(true);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
   const dictation = useDictation(appendToDraft);
+  const stopDictation = dictation.stop;
   const briefAudio = threads.find((thread) => thread.id === activeId)?.brief_audio ?? false;
   const playback = useVoicePlayback(activeId, dictation.listening, briefAudio);
   const speechPlayer = playback.player;
@@ -260,24 +266,24 @@ export default function BoardPage() {
   }, [speechPlayer]);
 
   const loadThreads = useCallback(async () => {
+    try {
     const res = await fetch("/api/threads");
     if (res.status === 401) {
       location.href = "/login";
       return;
     }
     const data = (await res.json()) as { threads?: ThreadSummary[]; error?: string };
-    if (data.error) {
-      setError(data.error);
-      return;
-    }
-    let list = data.threads ?? [];
+    if (!res.ok || data.error || !Array.isArray(data.threads)) throw new Error(data.error ?? "Could not load conversations. Refresh to retry.");
+    let list = (data.threads ?? []).filter((thread) => !removedIds.current.has(thread.id));
     if (list.length === 0) {
       const made = await fetch("/api/threads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "General" }) });
-      const t = (await made.json()) as { thread?: ThreadSummary };
-      if (t.thread) list = [t.thread];
+      const t = (await made.json()) as { thread?: ThreadSummary; error?: string };
+      if (!made.ok || !t.thread) throw new Error(t.error ?? "Could not start a new conversation. Refresh to retry.");
+      list = [t.thread];
     }
     setThreads(list);
-    setActiveId((cur) => cur ?? list[0]?.id ?? null);
+    setActiveId((cur) => list.some((thread) => thread.id === cur) ? cur : list[0]?.id ?? null);
+    } catch (cause) { setError((cause as Error).message); }
   }, []);
 
   useEffect(() => {
@@ -309,8 +315,22 @@ export default function BoardPage() {
           location.href = "/login";
           return;
         }
-        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; now?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean };
+        const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; missing?: boolean; now?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean };
         if (stopped) return;
+        if (data.missing) {
+          stopped = true;
+          removedIds.current.add(activeId);
+          loaded.current = { threadId: null, messages: [] };
+          speechPlayer.stop();
+          stopDictation();
+          setMessages([]);
+          setDraft("");
+          setActiveId(null);
+          setRecentRemoval(activeId);
+          setRemoveTarget(null);
+          void loadThreads();
+          return;
+        }
         if (data.error) {
           setError(data.error);
           return;
@@ -341,7 +361,7 @@ export default function BoardPage() {
       stopped = true;
       clearInterval(t);
     };
-  }, [activeId, speechPlayer, acceptMessages]);
+  }, [activeId, speechPlayer, acceptMessages, loadThreads, stopDictation]);
 
   // Follow new messages only while the reader is already at the bottom.
   useEffect(() => {
@@ -469,6 +489,22 @@ export default function BoardPage() {
     finally { answerModeSaveVersion.current += 1; setSavingAnswerMode(false); }
   }
 
+  function conversationRemoved(id: string) {
+    removedIds.current.add(id);
+    speechPlayer.stop();
+    stopDictation();
+    // Reject any in-flight response for the removed conversation immediately.
+    loaded.current = { threadId: null, messages: [] };
+    setMessages([]);
+    setDraft("");
+    setActiveId(null);
+    setThreads((current) => current.filter((thread) => thread.id !== id));
+    setRemoveTarget(null);
+    setRecentRemoval(id);
+    setError("");
+    void loadThreads();
+  }
+
   async function changePaused(paused: boolean) {
     if (!activeId || pauseSaveVersion.current % 2 !== 0) return;
     const threadId = activeId;
@@ -490,6 +526,7 @@ export default function BoardPage() {
 
   return (
     <div className="flex h-dvh overflow-hidden">
+      {removeTarget && <RemoveConversation key={removeTarget.id} conversation={removeTarget} isLast={threads.length === 1} onClose={() => setRemoveTarget(null)} onRemoved={conversationRemoved} />}
       {navOpen && <button type="button" aria-label="Close conversations" onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/60 md:hidden" />}
       <aside
         className={`fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 transition-transform md:static md:z-auto md:translate-x-0 md:bg-zinc-900/60 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
@@ -564,7 +601,7 @@ export default function BoardPage() {
             <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`min-h-10 rounded-lg border px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-400 bg-amber-400 text-zinc-950 hover:bg-amber-300" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
               {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
             </button>
-            <ControlPopover key={activeId} label="Status details" trigger={<><span className="hidden sm:inline">Status details</span><span aria-hidden className="sm:hidden">•••</span></>}>
+            <ControlPopover key={activeId} label="Conversation options" trigger={<><span className="hidden sm:inline">Options</span><span aria-hidden className="sm:hidden">•••</span></>}>
               <h2 className="mb-3 text-[14px] font-semibold">Assistant activity</h2>
               <div className="space-y-4">{(["claude", "chatgpt"] as const).map((who) => (
                 <div key={who} className="space-y-1 text-[12px]">
@@ -573,11 +610,16 @@ export default function BoardPage() {
                   {stats[who] != null && <p className="text-zinc-400">Average first reply: {spell(stats[who]!)}</p>}
                 </div>
               ))}</div>
+              <div className="mt-4 border-t border-zinc-700 pt-3">
+                <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-11 w-full rounded-lg border border-rose-500/40 px-3 text-left text-[13px] font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-40">Remove conversation…</button>
+              </div>
             </ControlPopover>
           </div>
           {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
         </header>
+
+        <RemovalStatus recentId={recentRemoval} onDismiss={() => setRecentRemoval(null)} />
 
         {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-[13px] leading-5 text-amber-200">Conversation paused. Messages wait here until you resume.</div>}
 

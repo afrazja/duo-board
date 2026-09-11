@@ -1,5 +1,7 @@
 import { identify, unauthorized } from "@/lib/agent-auth";
 import { listThreads, postMessage, readNew, readThread, rewind } from "@/lib/board";
+import { acknowledgeDeletion, listDeletions } from "@/lib/deletions";
+import { z } from "zod";
 
 // A plain HTTP mirror of the MCP tools, for assistants or scripts that find
 // a curl easier than an MCP client. Same tokens, same functions.
@@ -17,6 +19,7 @@ export async function GET(req: Request, ctx: Ctx) {
   if (!who) return unauthorized();
   const { action } = await ctx.params;
   try {
+    if (action === "deletions") return Response.json({ deletions: await listDeletions(who) });
     if (action === "new") {
       const thread = new URL(req.url).searchParams.get("thread") ?? undefined;
       return Response.json({ assistant: who, ...(await readNew(who, 100, thread)) });
@@ -39,6 +42,11 @@ export async function POST(req: Request, ctx: Ctx) {
   const { action } = await ctx.params;
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    if (action === "deletion-cleanup") {
+      const parsed = z.object({ thread_id: z.string().uuid(), status: z.enum(["complete", "blocked"]) }).safeParse(body);
+      if (!parsed.success) return Response.json({ error: "thread_id and cleanup status are required" }, { status: 400 });
+      return Response.json({ deletion: await acknowledgeDeletion(who, parsed.data.thread_id, parsed.data.status) });
+    }
     if (action === "post") {
       if (typeof body.thread_id !== "string" || typeof body.body !== "string") {
         return Response.json({ error: "thread_id and body are required" }, { status: 400 });

@@ -189,8 +189,9 @@ export async function setThreadPreferences(threadId: string, preferences: { brie
 }
 
 export async function getThreadPreferences(threadId: string) {
-  const { data, error } = await db().from("threads").select("*").eq("id", threadId).single();
+  const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
   if (error) fail(error);
+  if (!data) throw new Error("Conversation not found");
   return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
@@ -214,26 +215,14 @@ export type DeleteThreadResult = { deleted: true; thread_id: string } | { delete
  * per-conversation places. Nothing is archived; there is nothing to restore.
  * The caller must supply the exact title, the server-side half of the
  * warning the page shows. Stale held-reply seqs on the assistant rows are
- * pruned afterwards so they never point at rows that no longer exist.
+ * pruned in the same transaction. A content-free removal receipt survives
+ * until each assistant confirms permanent cleanup of its local session.
  */
 export async function deleteThread(threadId: string, confirmTitle: string): Promise<DeleteThreadResult> {
-  const { data: thread, error } = await db().from("threads").select("id, title").eq("id", threadId).maybeSingle();
-  if (error) fail(error);
-  if (!thread) return { deleted: false, reason: "not_found" };
-  if ((thread.title as string).trim() !== confirmTitle.trim()) return { deleted: false, reason: "title_mismatch" };
-  const { error: delErr } = await db().from("threads").delete().eq("id", threadId);
-  if (delErr) fail(delErr);
-  // Prune held seqs that pointed into the removed conversation.
-  const { data: rows } = await db().from("assistants").select("name, held_seqs");
-  for (const a of (rows ?? []) as { name: Assistant; held_seqs?: unknown[] }[]) {
-    const held = (a.held_seqs ?? []).map(Number).filter((n) => Number.isFinite(n));
-    if (!held.length) continue;
-    const { data: alive } = await db().from("messages").select("seq").in("seq", held);
-    const keep = new Set((alive ?? []).map((m) => Number(m.seq)));
-    const pruned = held.filter((s) => keep.has(s));
-    if (pruned.length !== held.length) await stampAssistant(a.name, { held_seqs: pruned });
-  }
-  return { deleted: true, thread_id: threadId };
+  // The receipt and cascading delete must commit together, including after retries.
+  const { data, error } = await db().rpc("remove_board_conversation", { p_thread_id: threadId, p_confirm_title: confirmTitle });
+  if (error) throw new Error("Could not remove this conversation. Nothing has been confirmed deleted; try again.");
+  return data as DeleteThreadResult;
 }
 
 export async function getMessages(threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {

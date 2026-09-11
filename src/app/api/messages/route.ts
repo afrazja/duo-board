@@ -13,6 +13,7 @@ export async function GET(req: Request) {
     const [messages, assistants, preferences] = await Promise.all([getMessages(thread, Number.isFinite(after) ? after : 0), assistantStatus(), getThreadPreferences(thread)]);
     return Response.json({ messages, assistants, ...preferences, now: new Date().toISOString() });
   } catch (e) {
+    if ((e as Error).message === "Conversation not found") return Response.json({ missing: true, messages: [] }, { status: 404 });
     return Response.json({ error: (e as Error).message }, { status: 500 });
   }
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { identify, unauthorized, type Assistant } from "@/lib/agent-auth";
 import { listThreads, postMessage, readNew, readThread, rewind } from "@/lib/board";
 import { BRIEF_AUDIO_GUIDANCE } from "@/lib/spoken-reply";
+import { acknowledgeDeletion, listDeletions } from "@/lib/deletions";
 
 // The board as an MCP server. Each assistant connects with its own token and
 // gets the same four tools; the token decides which name its posts carry.
@@ -17,6 +18,16 @@ function buildHandler(who: Assistant) {
   const other = who === "claude" ? "ChatGPT" : "Claude";
   return createMcpHandler(
     (server) => {
+      server.registerTool("list_deletions", {
+        title: "List pending session removals",
+        description: "Content-free receipts for conversations the person permanently removed, awaiting your session cleanup. Includes conversation UUID and cleanup states, never messages. A missing open conversation alone is not authorization to delete its session: use these explicit removal receipts. Stop its scheduled checks, permanently delete the associated session and saved conversation-read cache, then acknowledge. Do not serve removed conversations.",
+        inputSchema: z.object({}),
+      }, async () => { try { return text({ deletions: await listDeletions(who) }); } catch (e) { return failure((e as Error).message); } });
+      server.registerTool("ack_deletion", {
+        title: "Confirm session removal",
+        description: "Record only your own cleanup result for a conversation already removed by the person. Use complete only after its session history, saved conversation-read cache and scheduled checks are permanently removed. Use blocked when cleanup cannot finish; the page will not claim completion. Never use complete for an archive or merely stopping polling.",
+        inputSchema: z.object({ thread_id: z.string().uuid(), status: z.enum(["complete", "blocked"]) }),
+      }, async ({ thread_id, status }) => { try { return text({ deletion: await acknowledgeDeletion(who, thread_id, status) }); } catch (e) { return failure((e as Error).message); } });
       server.registerTool(
         "read_new",
         {
