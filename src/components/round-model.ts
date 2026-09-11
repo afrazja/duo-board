@@ -64,6 +64,7 @@ export function roundState(row: BoardRow, rows: BoardRow[], now: number) {
   if (!question || !isFirstRound(row)) return { held: false, paired: false };
   const answered = (who: "claude" | "chatgpt") => hasFirstAnswer(row, who);
   const paired = answered("claude") && answered("chatgpt");
+  if (question.stopped_for?.length) return { paired, held: false };
   if (question.blind_round === false) return { paired, held: false };
   const expired = now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000;
   const movedOn = (who: "claude" | "chatgpt") => answered(who) || rows.some((later) => later.user && later.user.seq > question.seq && later[who].some((message) => message.reply_to === later.user!.id));

@@ -20,6 +20,8 @@ export interface Message {
   created_at: string;
   kind: Kind;
   blind_round: boolean;
+  /** Assistants the person stopped for this specific question. */
+  stopped_for: Assistant[];
 }
 
 export interface ThreadSummary {
@@ -44,7 +46,7 @@ export interface AssistantStatus {
   working_on_seq: number | null;
 }
 
-const BASE_COLUMNS = "seq, id, thread_id, author, addressed_to, body, spoken_summary, reply_to, created_at";
+const BASE_COLUMNS = "seq, id, thread_id, author, addressed_to, body, spoken_summary, reply_to, created_at, stopped_for";
 const ROUND_COLUMNS = "seq, id, thread_id, author, addressed_to, reply_to, created_at";
 /** How much of a thread the round rules look at. */
 const ROUND_CONTEXT = 300;
@@ -102,7 +104,7 @@ async function columns(): Promise<string> {
 // Rows come back untyped because the column list is chosen at runtime.
 function asMessage(row: unknown): Message {
   const r = row as Record<string, unknown>;
-  return { ...(r as unknown as Message), kind: (r.kind as Kind | undefined) ?? "message", blind_round: r.blind_round !== false };
+  return { ...(r as unknown as Message), kind: (r.kind as Kind | undefined) ?? "message", blind_round: r.blind_round !== false, stopped_for: (r.stopped_for as Assistant[] | undefined) ?? [] };
 }
 
 /**
@@ -240,6 +242,18 @@ export async function getMessages(ownerId: string, threadId: string, afterSeq = 
     .limit(limit);
   if (error) fail(error);
   return (data ?? []).map((row) => asMessage(row));
+}
+
+/** Stop one assistant from answering one question without pausing the conversation or the other assistant. */
+export async function stopAssistantTask(ownerId: string, threadId: string, messageId: string, assistant: Assistant): Promise<Message> {
+  const { data, error } = await db().rpc("stop_board_task", {
+    p_owner_id: ownerId,
+    p_thread_id: threadId,
+    p_message_id: messageId,
+    p_assistant: assistant,
+  });
+  if (error) throw new Error(error.message.includes("Task not found") ? "That waiting task no longer exists" : "Could not stop this task");
+  return asMessage(data);
 }
 
 /**
@@ -386,7 +400,7 @@ function decorate(assistant: Assistant, rows: Candidate[]) {
     thread_title: threads.title,
     voice_mode: threads.brief_audio,
     audio_preference: threads.brief_audio ? ("brief" as const) : ("full" as const),
-    for_you: m.author === "user" && (m.addressed_to === "both" || m.addressed_to === assistant),
+    for_you: m.author === "user" && (m.addressed_to === "both" || m.addressed_to === assistant) && !m.stopped_for.includes(assistant),
   }));
 }
 

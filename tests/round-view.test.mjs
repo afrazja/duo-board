@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { groupRows, mergeMessages, playableMessages, roundState, hasBothAnswers, hasFirstAnswer, openingExcerpt } from '../src/components/round-model.ts';
 
-const message = (seq, author, extra = {}) => ({ seq, id: String(seq), thread_id: 'thread', author, addressed_to: author === 'user' ? 'both' : 'none', body: `Reply ${seq}`, spoken_summary: null, reply_to: null, kind: 'message', created_at: new Date(seq * 1000).toISOString(), ...extra });
+const message = (seq, author, extra = {}) => ({ seq, id: String(seq), thread_id: 'thread', author, addressed_to: author === 'user' ? 'both' : 'none', body: `Reply ${seq}`, spoken_summary: null, reply_to: null, kind: 'message', stopped_for: [], created_at: new Date(seq * 1000).toISOString(), ...extra });
 
 test('delayed linked answers stay under their own question, including a follow-up to a reply', () => {
   const rows = groupRows([message(1, 'user'), message(2, 'user'), message(3, 'claude', { reply_to: '1' }), message(4, 'chatgpt', { reply_to: '1' }), message(5, 'claude', { reply_to: '3' })]);
@@ -23,6 +23,12 @@ test('a held first answer never enters playback; both enter in arrival order on 
   const first = [message(1, 'user'), message(2, 'chatgpt', { reply_to: '1' })];
   assert.deepEqual(playableMessages(groupRows(first), 4000).map(m => m.seq), [1]);
   assert.deepEqual(playableMessages(groupRows([...first, message(3, 'claude', { reply_to: '1' })]), 4000).map(m => m.seq), [1, 2, 3]);
+});
+
+test('stopping ChatGPT releases the other answer without marking the round complete', () => {
+  const rows = groupRows([message(1, 'user', { stopped_for: ['chatgpt'] }), message(2, 'claude', { reply_to: '1' })]);
+  assert.deepEqual(roundState(rows[0], rows, 4000), { held: false, paired: false });
+  assert.deepEqual(playableMessages(rows, 4000).map(m => m.seq), [1, 2]);
 });
 
 test('unlinked progress does not reveal a modern round or enable Compare', () => {

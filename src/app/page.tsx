@@ -204,8 +204,10 @@ export default function BoardPage() {
   const [removeTarget, setRemoveTarget] = useState<{ id: string; title: string } | null>(null);
   const removedIds = useRef(new Set<string>());
   const [comparing, setComparing] = useState<string[]>([]);
+  const [stoppingTasks, setStoppingTasks] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
   const compareRequests = useRef(new Set<string>());
+  const stopRequests = useRef(new Set<string>());
   const loaded = useRef<{ threadId: string | null; messages: BoardMessage[] }>({ threadId: null, messages: [] });
   const briefSaveVersion = useRef(0);
   const answerModeSaveVersion = useRef(0);
@@ -397,6 +399,28 @@ export default function BoardPage() {
     } finally {
       compareRequests.current.delete(question.id);
       setComparing((current) => current.filter((id) => id !== question.id));
+    }
+  }
+
+  async function stopTask(question: BoardMessage) {
+    if (stopRequests.current.has(question.id)) return;
+    stopRequests.current.add(question.id);
+    setStoppingTasks((current) => [...current, question.id]);
+    setError("");
+    try {
+      const res = await fetch("/api/messages", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: question.thread_id, message_id: question.id, assistant: "chatgpt" }),
+      });
+      const data = await res.json() as { message?: BoardMessage; error?: string };
+      if (!res.ok || !data.message) throw new Error(data.error ?? "Could not stop this task");
+      acceptMessages(question.thread_id, [data.message]);
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      stopRequests.current.delete(question.id);
+      setStoppingTasks((current) => current.filter((id) => id !== question.id));
     }
   }
 
@@ -594,7 +618,7 @@ export default function BoardPage() {
                     <Body text={row.user.body} />
                   </div>
                 )}
-                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} stopping={stoppingTasks} onStop={(question) => void stopTask(question)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
               </section>
             ))}
           </div>

@@ -1,4 +1,4 @@
-import { assistantStatus, findCompare, getThreadPreferences, getMessages, postMessage, type Audience } from "@/lib/board";
+import { assistantStatus, findCompare, getThreadPreferences, getMessages, postMessage, stopAssistantTask, type Audience } from "@/lib/board";
 import { authErrorResponse, requireUser } from "@/lib/account-auth";
 
 const AUDIENCES: Audience[] = ["both", "claude", "chatgpt", "none"];
@@ -38,6 +38,20 @@ export async function POST(req: Request) {
     }
     const addressedTo = compare ? "both" : AUDIENCES.includes(body.addressed_to as Audience) ? (body.addressed_to as Audience) : "both";
     const message = await postMessage({ ownerId: user.id, threadId: body.thread_id, author: "user", addressedTo, body: body.body, replyTo, kind: compare ? "compare" : "message" });
+    return Response.json({ message });
+  } catch (e) {
+    return authErrorResponse(e) ?? Response.json({ error: (e as Error).message }, { status: 400 });
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const user = await requireUser();
+    const body = (await req.json()) as { thread_id?: unknown; message_id?: unknown; assistant?: unknown };
+    if (typeof body.thread_id !== "string" || typeof body.message_id !== "string" || body.assistant !== "chatgpt") {
+      return Response.json({ error: "thread_id, message_id and ChatGPT are required" }, { status: 400 });
+    }
+    const message = await stopAssistantTask(user.id, body.thread_id, body.message_id, "chatgpt");
     return Response.json({ message });
   } catch (e) {
     return authErrorResponse(e) ?? Response.json({ error: (e as Error).message }, { status: 400 });
