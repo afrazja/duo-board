@@ -19,6 +19,8 @@ export interface RoundMessage {
   created_at: string;
   /** Snapshot on the question; later conversation settings never change it. */
   blind_round?: boolean;
+  /** On the person's message: assistants the person stopped for it. */
+  stopped_for?: Assistant[];
 }
 
 /** After this long, a round stops withholding even if an answer never used reply_to. */
@@ -102,6 +104,9 @@ export function withheldFrom(
       continue;
     }
     if (q.addressed_to !== "both" || q.blind_round === false) continue;
+    // A stop ends the round for the stopped assistant: it will never answer,
+    // so the other assistant's answer is no longer held back from it.
+    if (q.stopped_for?.includes(who)) continue;
     if (!hasAnswered(who, q, thread, now)) held.add(m.seq);
   }
   return held;

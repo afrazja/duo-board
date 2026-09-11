@@ -54,9 +54,9 @@ How the sessions get started is up to each assistant's client. For Claude Code, 
 
 Each conversation has a `paused` setting (`PATCH /api/threads` with `{ thread_id, paused }`, shown in `list_threads` and in the thread preferences). While paused, an assistant's scoped `read_new` of that conversation returns `paused: true` with no messages and moves nothing, and both assistants' loops skip it. Nothing is lost: resuming lets the next read deliver everything that arrived meanwhile, in order, so blind rounds and compare continue where they left off. Apply `supabase/pause-resume.sql` once on an existing database.
 
-## Stop one ChatGPT task
+## Stop one assistant's task
 
-While a ChatGPT card says **Waiting for an answer** or **Working on an answer**, the person can select **Stop** in that card. The linked answer is then rejected even if it was already being composed, while Claude and later questions continue normally. Apply `supabase/task-stops.sql` once on an existing database.
+While Claude's or ChatGPT's card says **Waiting for an answer** or **Working on an answer**, the person can select **Stop** in that card. That assistant's linked answer is then rejected even if it was already being composed, and an unlinked note that would sit under the task is refused too, while the other assistant and later questions continue normally. `read_new` marks the stopped message `for_you: false` and lists the person's recent stopped messages under `stopped`, so a session already working on one learns at its next check. A stop also ends a Separate round, so the other assistant's answer is shown and delivered as it arrives. Apply `supabase/task-stops.sql` once on an existing database.
 
 ## Remove a conversation
 

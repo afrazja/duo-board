@@ -31,6 +31,12 @@ test('stopping ChatGPT releases the other answer without marking the round compl
   assert.deepEqual(playableMessages(rows, 4000).map(m => m.seq), [1, 2]);
 });
 
+test("stopping Claude releases ChatGPT's answer without marking the round complete", () => {
+  const rows = groupRows([message(1, 'user', { stopped_for: ['claude'] }), message(2, 'chatgpt', { reply_to: '1' })]);
+  assert.deepEqual(roundState(rows[0], rows, 4000), { held: false, paired: false });
+  assert.deepEqual(playableMessages(rows, 4000).map(m => m.seq), [1, 2]);
+});
+
 test('unlinked progress does not reveal a modern round or enable Compare', () => {
   const rows = groupRows([message(1, 'user'), message(2, 'chatgpt'), message(3, 'claude', { reply_to: '1' })]);
   assert.deepEqual(roundState(rows[0], rows, 4000), { held: true, paired: false });

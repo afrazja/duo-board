@@ -198,3 +198,15 @@ test("Threads are independent: a reply in one thread is judged against that thre
   const gptB = msg("chatgpt", { replyTo: "qB", thread: "B" });
   assert.deepEqual([...withheldFrom("claude", [gptB], byThread(qA, qB, mineA, gptB), T0 + 60_000)], [gptB.seq]);
 });
+
+test("A question the person stopped for an assistant releases the other assistant's answer to it", () => {
+  seq = 0;
+  const q = { ...msg("user", { id: "q" }), stopped_for: ["claude"] };
+  const gpt = msg("chatgpt", { replyTo: "q" });
+  assert.deepEqual([...withheldFrom("claude", [gpt], byThread(q, gpt), T0 + 60_000)], []);
+  // A stop for the other assistant releases nothing to this one.
+  seq = 0;
+  const q2 = { ...msg("user", { id: "q2" }), stopped_for: ["chatgpt"] };
+  const gpt2 = msg("chatgpt", { replyTo: "q2" });
+  assert.deepEqual([...withheldFrom("claude", [gpt2], byThread(q2, gpt2), T0 + 60_000)], [gpt2.seq]);
+});

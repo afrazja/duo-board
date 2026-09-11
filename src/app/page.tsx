@@ -402,16 +402,17 @@ export default function BoardPage() {
     }
   }
 
-  async function stopTask(question: BoardMessage) {
-    if (stopRequests.current.has(question.id)) return;
-    stopRequests.current.add(question.id);
-    setStoppingTasks((current) => [...current, question.id]);
+  async function stopTask(question: BoardMessage, who: "claude" | "chatgpt") {
+    const key = `${question.id}:${who}`;
+    if (stopRequests.current.has(key)) return;
+    stopRequests.current.add(key);
+    setStoppingTasks((current) => [...current, key]);
     setError("");
     try {
       const res = await fetch("/api/messages", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: question.thread_id, message_id: question.id, assistant: "chatgpt" }),
+        body: JSON.stringify({ thread_id: question.thread_id, message_id: question.id, assistant: who }),
       });
       const data = await res.json() as { message?: BoardMessage; error?: string };
       if (!res.ok || !data.message) throw new Error(data.error ?? "Could not stop this task");
@@ -419,8 +420,8 @@ export default function BoardPage() {
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
-      stopRequests.current.delete(question.id);
-      setStoppingTasks((current) => current.filter((id) => id !== question.id));
+      stopRequests.current.delete(key);
+      setStoppingTasks((current) => current.filter((id) => id !== key));
     }
   }
 
@@ -618,7 +619,7 @@ export default function BoardPage() {
                     <Body text={row.user.body} />
                   </div>
                 )}
-                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} stopping={stoppingTasks} onStop={(question) => void stopTask(question)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} stopping={stoppingTasks} onStop={(question, who) => void stopTask(question, who)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
               </section>
             ))}
           </div>

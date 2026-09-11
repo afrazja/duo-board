@@ -47,10 +47,15 @@ export interface AssistantStatus {
 }
 
 const BASE_COLUMNS = "seq, id, thread_id, author, addressed_to, body, spoken_summary, reply_to, created_at, stopped_for";
-const ROUND_COLUMNS = "seq, id, thread_id, author, addressed_to, reply_to, created_at";
+// stopped_for lets the round rules end a round for an assistant the person stopped.
+const ROUND_COLUMNS = "seq, id, thread_id, author, addressed_to, reply_to, created_at, stopped_for";
 /** How much of a thread the round rules look at. */
 const ROUND_CONTEXT = 300;
 const ASSISTANTS: Assistant[] = ["claude", "chatgpt"];
+/** Same words as the database trigger that refuses a linked answer to a stopped task. */
+const STOPPED_POST = "The person stopped this task. Do not continue or post an answer.";
+/** How far back read_new lists stopped tasks, so a session working on one learns at its next check. */
+const STOPPED_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function fail(error: { message: string } | null): never {
   throw new Error(error?.message ?? "Database error");
@@ -332,6 +337,21 @@ export async function postMessage(input: {
   if (input.author !== "user" && state.paused) {
     throw new Error("This conversation is paused; assistants cannot post until it is resumed");
   }
+  // The database refuses a linked answer to a task the person stopped. An
+  // unlinked note would still land under the latest question on the page,
+  // so it is refused here when that question is stopped for this assistant.
+  if (input.author !== "user" && !input.replyTo) {
+    const { data: latest, error: latestErr } = await db()
+      .from("messages")
+      .select("stopped_for")
+      .eq("thread_id", input.threadId)
+      .eq("author", "user")
+      .order("seq", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestErr) fail(latestErr);
+    if (((latest?.stopped_for ?? []) as string[]).includes(input.author)) throw new Error(STOPPED_POST);
+  }
   const compare = input.kind === "compare" && (await hasRounds());
   if (compare) {
     if (!input.replyTo) throw new Error("A compare request needs reply_to");
@@ -383,6 +403,8 @@ export interface NewForAssistant {
   paused?: boolean;
   /** True when the scoped conversation no longer exists (removed): stop serving it. */
   missing?: boolean;
+  /** The person's messages from the last day that the person stopped for this assistant. Drop any task on them. */
+  stopped?: { question_id: string; thread_id: string }[];
   response_guidance?: string;
 }
 
@@ -594,12 +616,14 @@ async function readNewRounds(assistant: Assistant, ownerId: string | null, limit
     await stampRead(assistant, ownerId, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
   }
 
+  const stopped = await stoppedTasks(assistant, ownerId, threadId);
   return {
     messages: withContext,
     pending_for_you: forYou.length,
     cursor: lastSeen,
     held_for_you: held.size,
     ...(threadId ? { thread_id: threadId } : {}),
+    ...(stopped.length ? { stopped } : {}),
     ...(forYou.some((m) => m.voice_mode) ? { response_guidance: BRIEF_AUDIO_GUIDANCE } : {}),
   };
 }
@@ -625,6 +649,25 @@ async function attachCompareContext(messages: Decorated[]): Promise<NewForAssist
     const answers = ctx.answer_ids.map((id) => byId.get(id)).filter((x): x is Message => !!x).sort((a, b) => a.seq - b.seq);
     return { ...rest, compare_context: { question, answers } };
   });
+}
+
+/**
+ * The person's recent messages in scope that the person stopped for this
+ * assistant. Listed on every read, not once, because the list is state: a
+ * session that was already working on one of them learns at its next check.
+ */
+async function stoppedTasks(assistant: Assistant, ownerId: string | null, threadId?: string): Promise<{ question_id: string; thread_id: string }[]> {
+  let query = db()
+    .from("messages")
+    .select("id, thread_id, threads!inner(title)")
+    .eq("author", "user")
+    .contains("stopped_for", [assistant])
+    .gt("created_at", new Date(Date.now() - STOPPED_WINDOW_MS).toISOString());
+  if (threadId) query = query.eq("thread_id", threadId);
+  query = ownerId ? query.eq("threads.owner_id", ownerId) : query.is("threads.owner_id", null);
+  const { data, error } = await query.order("seq", { ascending: true }).limit(50);
+  if (error) fail(error);
+  return (data ?? []).map((m) => ({ question_id: String(m.id), thread_id: String(m.thread_id) }));
 }
 
 export async function assistantStatus(ownerId: string): Promise<AssistantStatus[]> {

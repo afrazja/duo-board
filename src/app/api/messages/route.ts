@@ -48,10 +48,11 @@ export async function PATCH(req: Request) {
   try {
     const user = await requireUser();
     const body = (await req.json()) as { thread_id?: unknown; message_id?: unknown; assistant?: unknown };
-    if (typeof body.thread_id !== "string" || typeof body.message_id !== "string" || body.assistant !== "chatgpt") {
-      return Response.json({ error: "thread_id, message_id and ChatGPT are required" }, { status: 400 });
+    const assistant = body.assistant === "claude" || body.assistant === "chatgpt" ? body.assistant : null;
+    if (typeof body.thread_id !== "string" || typeof body.message_id !== "string" || !assistant) {
+      return Response.json({ error: "thread_id, message_id and assistant (claude or chatgpt) are required" }, { status: 400 });
     }
-    const message = await stopAssistantTask(user.id, body.thread_id, body.message_id, "chatgpt");
+    const message = await stopAssistantTask(user.id, body.thread_id, body.message_id, assistant);
     return Response.json({ message });
   } catch (e) {
     return authErrorResponse(e) ?? Response.json({ error: (e as Error).message }, { status: 400 });
