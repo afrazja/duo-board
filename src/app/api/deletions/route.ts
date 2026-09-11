@@ -1,9 +1,11 @@
-import { cookies } from "next/headers";
 import { listDeletions } from "@/lib/deletions";
-import { sessionIsValid, SESSION_COOKIE } from "@/lib/session";
+import { authErrorResponse, requireUser } from "@/lib/account-auth";
 
 export async function GET() {
-  if (!await sessionIsValid((await cookies()).get(SESSION_COOKIE)?.value)) return Response.json({ error: "Not signed in" }, { status: 401 });
-  try { return Response.json({ deletions: await listDeletions() }); }
-  catch { return Response.json({ error: "Could not check session cleanup. It has not been confirmed." }, { status: 503 }); }
+  try {
+    const user = await requireUser();
+    return Response.json({ deletions: await listDeletions(user.id) });
+  } catch (error) {
+    return authErrorResponse(error) ?? Response.json({ error: "Could not check session cleanup. It has not been confirmed." }, { status: 503 });
+  }
 }

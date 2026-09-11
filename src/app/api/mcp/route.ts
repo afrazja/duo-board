@@ -14,7 +14,7 @@ export const maxDuration = 30;
 const text = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
 const failure = (message: string) => ({ content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true });
 
-function buildHandler(who: Assistant) {
+function buildHandler(who: Assistant, ownerId: string | null) {
   const other = who === "claude" ? "ChatGPT" : "Claude";
   return createMcpHandler(
     (server) => {
@@ -22,12 +22,12 @@ function buildHandler(who: Assistant) {
         title: "List pending session removals",
         description: "Content-free receipts for conversations the person permanently removed, awaiting your session cleanup. Includes conversation UUID and cleanup states, never messages. A missing open conversation alone is not authorization to delete its session: use these explicit removal receipts. Stop its scheduled checks, permanently delete the associated session and saved conversation-read cache, then acknowledge. Do not serve removed conversations.",
         inputSchema: z.object({}),
-      }, async () => { try { return text({ deletions: await listDeletions(who) }); } catch (e) { return failure((e as Error).message); } });
+      }, async () => { try { return text({ deletions: await listDeletions(ownerId, who) }); } catch (e) { return failure((e as Error).message); } });
       server.registerTool("ack_deletion", {
         title: "Confirm session removal",
         description: "Record only your own cleanup result for a conversation already removed by the person. Use complete only after its session history, saved conversation-read cache and scheduled checks are permanently removed. Use blocked when cleanup cannot finish; the page will not claim completion. Never use complete for an archive or merely stopping polling.",
         inputSchema: z.object({ thread_id: z.string().uuid(), status: z.enum(["complete", "blocked"]) }),
-      }, async ({ thread_id, status }) => { try { return text({ deletion: await acknowledgeDeletion(who, thread_id, status) }); } catch (e) { return failure((e as Error).message); } });
+      }, async ({ thread_id, status }) => { try { return text({ deletion: await acknowledgeDeletion(ownerId, who, thread_id, status) }); } catch (e) { return failure((e as Error).message); } });
       server.registerTool(
         "read_new",
         {
@@ -38,7 +38,7 @@ function buildHandler(who: Assistant) {
         },
         async ({ limit, thread_id }) => {
           try {
-            return text(await readNew(who, limit ?? 100, thread_id));
+            return text(await readNew(who, ownerId, limit ?? 100, thread_id));
           } catch (e) {
             return failure((e as Error).message);
           }
@@ -59,7 +59,7 @@ function buildHandler(who: Assistant) {
         },
         async ({ thread_id, body, reply_to, spoken_summary }) => {
           try {
-            return text(await postMessage({ threadId: thread_id, author: who, body, replyTo: reply_to ?? null, spokenSummary: spoken_summary }));
+            return text(await postMessage({ ownerId, threadId: thread_id, author: who, body, replyTo: reply_to ?? null, spokenSummary: spoken_summary }));
           } catch (e) {
             return failure((e as Error).message);
           }
@@ -75,7 +75,7 @@ function buildHandler(who: Assistant) {
         },
         async ({ thread_id, limit }) => {
           try {
-            return text(await readThread(thread_id, limit ?? 60, who));
+            return text(await readThread(ownerId, thread_id, limit ?? 60, who));
           } catch (e) {
             return failure((e as Error).message);
           }
@@ -91,7 +91,7 @@ function buildHandler(who: Assistant) {
         },
         async () => {
           try {
-            return text(await listThreads());
+            return text(await listThreads(ownerId));
           } catch (e) {
             return failure((e as Error).message);
           }
@@ -107,7 +107,7 @@ function buildHandler(who: Assistant) {
         },
         async ({ to_seq, thread_id }) => {
           try {
-            await rewind(who, to_seq, thread_id);
+            await rewind(who, ownerId, to_seq, thread_id);
             return text({ ok: true, cursor: to_seq, ...(thread_id ? { thread_id } : {}) });
           } catch (e) {
             return failure((e as Error).message);
@@ -123,15 +123,10 @@ function buildHandler(who: Assistant) {
   );
 }
 
-const handlers: Record<Assistant, (req: Request) => Promise<Response>> = {
-  claude: buildHandler("claude"),
-  chatgpt: buildHandler("chatgpt"),
-};
-
 async function handler(req: Request) {
-  const who = identify(req);
-  if (!who) return unauthorized();
-  return handlers[who](req);
+  const identity = await identify(req);
+  if (!identity) return unauthorized();
+  return buildHandler(identity.assistant, identity.ownerId)(req);
 }
 
 export { handler as GET, handler as POST, handler as DELETE };

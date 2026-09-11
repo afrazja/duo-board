@@ -1,56 +1,54 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { AuthShell, authButton, authInput } from "@/components/auth-shell";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [confirmed, setConfirmed] = useState(false);
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    const res = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
+  useEffect(() => {
+    queueMicrotask(() => setConfirmed(new URLSearchParams(location.search).get("confirmed") === "1"));
+    const params = new URLSearchParams(location.hash.slice(1));
+    const access = params.get("access_token");
+    const refresh = params.get("refresh_token");
+    if (!access || !refresh) return;
+    queueMicrotask(() => setLinkBusy(true));
+    void fetch("/api/auth/exchange", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_token: access, refresh_token: refresh }) })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? "This link is invalid or expired");
+        history.replaceState(null, "", location.pathname + location.search);
+        router.replace(params.get("type") === "recovery" ? "/reset-password" : "/");
+        router.refresh();
+      })
+      .catch((cause) => { setError((cause as Error).message); setLinkBusy(false); });
+  }, [router]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError("");
+    const res = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    const data = await res.json().catch(() => ({})) as { error?: string };
     setBusy(false);
-    if (res.ok) {
-      router.push("/");
-      router.refresh();
-    } else {
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(data.error ?? "Could not sign in");
-    }
+    if (!res.ok) return setError(data.error ?? "Could not sign in");
+    router.replace("/"); router.refresh();
   }
 
-  return (
-    <main className="flex min-h-screen items-center justify-center p-6">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
-        <h1 className="mb-1 text-lg font-semibold">Duo Board</h1>
-        <p className="mb-5 text-sm text-zinc-400">One conversation, two assistants. Enter the board password.</p>
-        <input
-          type="password"
-          autoFocus
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          aria-label="Board password"
-          className="mb-3 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-indigo-500"
-        />
-        {error && <p className="mb-3 text-sm text-rose-400">{error}</p>}
-        <button
-          type="submit"
-          disabled={busy || !password}
-          className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-        >
-          {busy ? "Checking…" : "Enter"}
-        </button>
-      </form>
-    </main>
-  );
+  return <AuthShell title="Welcome back" subtitle="Sign in to your private board and assistant connections." footer={<>New here? <Link href="/signup" className="font-medium text-indigo-300 hover:text-indigo-200">Create an account</Link></>}>
+    {confirmed && <p role="status" className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-200">Email confirmed. Sign in to continue.</p>}
+    {linkBusy ? <p className="py-8 text-center text-sm text-zinc-300">Finishing sign in…</p> : <form onSubmit={submit} className="space-y-4">
+      <label className="block text-sm text-zinc-300">Email<input className={authInput} type="email" autoComplete="email" autoFocus required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+      <label className="block text-sm text-zinc-300">Password<input className={authInput} type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+      <div className="text-right"><Link href="/forgot-password" className="text-sm text-indigo-300 hover:text-indigo-200">Forgot password?</Link></div>
+      {error && <p role="alert" className="text-sm text-rose-300">{error}</p>}
+      <button className={authButton} disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+    </form>}
+  </AuthShell>;
 }

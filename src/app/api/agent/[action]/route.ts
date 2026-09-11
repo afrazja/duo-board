@@ -15,20 +15,21 @@ import { z } from "zod";
 type Ctx = { params: Promise<{ action: string }> };
 
 export async function GET(req: Request, ctx: Ctx) {
-  const who = identify(req);
-  if (!who) return unauthorized();
+  const identity = await identify(req);
+  if (!identity) return unauthorized();
+  const { assistant: who, ownerId } = identity;
   const { action } = await ctx.params;
   try {
-    if (action === "deletions") return Response.json({ deletions: await listDeletions(who) });
+    if (action === "deletions") return Response.json({ deletions: await listDeletions(ownerId, who) });
     if (action === "new") {
       const thread = new URL(req.url).searchParams.get("thread") ?? undefined;
-      return Response.json({ assistant: who, ...(await readNew(who, 100, thread)) });
+      return Response.json({ assistant: who, ...(await readNew(who, ownerId, 100, thread)) });
     }
-    if (action === "threads") return Response.json({ threads: await listThreads() });
+    if (action === "threads") return Response.json({ threads: await listThreads(ownerId) });
     if (action === "thread") {
       const id = new URL(req.url).searchParams.get("id");
       if (!id) return Response.json({ error: "id is required" }, { status: 400 });
-      return Response.json({ messages: await readThread(id, 60, who) });
+      return Response.json({ messages: await readThread(ownerId, id, 60, who) });
     }
     return Response.json({ error: "Unknown action" }, { status: 404 });
   } catch (e) {
@@ -37,21 +38,23 @@ export async function GET(req: Request, ctx: Ctx) {
 }
 
 export async function POST(req: Request, ctx: Ctx) {
-  const who = identify(req);
-  if (!who) return unauthorized();
+  const identity = await identify(req);
+  if (!identity) return unauthorized();
+  const { assistant: who, ownerId } = identity;
   const { action } = await ctx.params;
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     if (action === "deletion-cleanup") {
       const parsed = z.object({ thread_id: z.string().uuid(), status: z.enum(["complete", "blocked"]) }).safeParse(body);
       if (!parsed.success) return Response.json({ error: "thread_id and cleanup status are required" }, { status: 400 });
-      return Response.json({ deletion: await acknowledgeDeletion(who, parsed.data.thread_id, parsed.data.status) });
+      return Response.json({ deletion: await acknowledgeDeletion(ownerId, who, parsed.data.thread_id, parsed.data.status) });
     }
     if (action === "post") {
       if (typeof body.thread_id !== "string" || typeof body.body !== "string") {
         return Response.json({ error: "thread_id and body are required" }, { status: 400 });
       }
       const message = await postMessage({
+        ownerId,
         threadId: body.thread_id,
         author: who,
         body: body.body,
@@ -61,7 +64,7 @@ export async function POST(req: Request, ctx: Ctx) {
       return Response.json({ message });
     }
     if (action === "rewind") {
-      await rewind(who, Number(body.to_seq ?? 0), typeof body.thread_id === "string" ? body.thread_id : undefined);
+      await rewind(who, ownerId, Number(body.to_seq ?? 0), typeof body.thread_id === "string" ? body.thread_id : undefined);
       return Response.json({ ok: true });
     }
     return Response.json({ error: "Unknown action" }, { status: 404 });

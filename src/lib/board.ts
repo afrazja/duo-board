@@ -153,58 +153,62 @@ async function roundContext(threadId: string, anchors: { reply_to: string | null
  * has not been run yet, drop them and keep the rest of the stamp so cursors
  * and timestamps never stall on a missing column.
  */
-async function stampAssistant(name: Assistant, patch: Record<string, unknown>): Promise<void> {
-  const { error } = await db().from("assistants").update(patch).eq("name", name);
+async function stampAssistant(name: Assistant, ownerId: string | null, patch: Record<string, unknown>): Promise<void> {
+  let query = db().from("assistants").update(patch).eq("name", name);
+  query = ownerId ? query.eq("owner_id", ownerId) : query.is("owner_id", null);
+  const { error } = await query;
   if (error && ("working_on_seq" in patch || "floor_seq" in patch || "held_seqs" in patch)) {
     const rest = { ...patch };
     delete rest.working_on_seq;
     delete rest.floor_seq;
     delete rest.held_seqs;
-    await db().from("assistants").update(rest).eq("name", name);
+    let fallback = db().from("assistants").update(rest).eq("name", name);
+    fallback = ownerId ? fallback.eq("owner_id", ownerId) : fallback.is("owner_id", null);
+    await fallback;
   }
 }
 
-export async function listThreads(): Promise<ThreadSummary[]> {
-  const { data, error } = await db()
+export async function listThreads(ownerId: string | null): Promise<ThreadSummary[]> {
+  let query = db()
     .from("thread_summaries")
     .select("*")
     .eq("archived", false)
     .order("created_at", { ascending: false });
+  query = ownerId ? query.eq("owner_id", ownerId) : query.is("owner_id", null);
+  const { data, error } = await query;
   if (error) fail(error);
   return (data ?? []).map((t) => ({ ...t, message_count: Number(t.message_count), blind_first_round: t.blind_first_round !== false, paused: t.paused === true }));
 }
 
-export async function createThread(title: string): Promise<ThreadSummary> {
+export async function createThread(ownerId: string, title: string): Promise<ThreadSummary> {
   const clean = title.trim().slice(0, 120);
   if (!clean) throw new Error("A thread needs a title");
-  const { data, error } = await db().from("threads").insert({ title: clean }).select("*").single();
+  const { data, error } = await db().from("threads").insert({ title: clean, owner_id: ownerId }).select("*").single();
   if (error) fail(error);
   return { ...data, message_count: 0, last_message_at: null, blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-export async function setThreadPreferences(threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
-  const { data, error } = await db().from("threads").update(preferences).eq("id", threadId).select("*").single();
+export async function setThreadPreferences(ownerId: string, threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
+  const { data, error } = await db().from("threads").update(preferences).eq("id", threadId).eq("owner_id", ownerId).select("*").single();
   if (error) fail(error);
   return { id: data.id as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-export async function getThreadPreferences(threadId: string) {
-  const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
+export async function getThreadPreferences(ownerId: string, threadId: string) {
+  const { data, error } = await db().from("threads").select("*").eq("id", threadId).eq("owner_id", ownerId).maybeSingle();
   if (error) fail(error);
   if (!data) throw new Error("Conversation not found");
   return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
 /** Whether a conversation exists and whether it is paused. A database without the column answers not paused. */
-async function threadState(threadId: string): Promise<{ exists: boolean; paused: boolean }> {
-  const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
+async function threadState(threadId: string, ownerId: string | null): Promise<{ exists: boolean; paused: boolean }> {
+  let query = db().from("threads").select("*").eq("id", threadId);
+  query = ownerId ? query.eq("owner_id", ownerId) : query.is("owner_id", null);
+  const { data, error } = await query.maybeSingle();
   if (error) fail(error);
   const row = data as { paused?: boolean } | null;
   return { exists: !!row, paused: row?.paused === true };
-}
-
-async function isPaused(threadId: string): Promise<boolean> {
-  return (await threadState(threadId)).paused;
 }
 
 export type DeleteThreadResult = { deleted: true; thread_id: string } | { deleted: false; reason: "not_found" | "title_mismatch" };
@@ -218,14 +222,15 @@ export type DeleteThreadResult = { deleted: true; thread_id: string } | { delete
  * pruned in the same transaction. A content-free removal receipt survives
  * until each assistant confirms permanent cleanup of its local session.
  */
-export async function deleteThread(threadId: string, confirmTitle: string): Promise<DeleteThreadResult> {
+export async function deleteThread(ownerId: string, threadId: string, confirmTitle: string): Promise<DeleteThreadResult> {
   // The receipt and cascading delete must commit together, including after retries.
-  const { data, error } = await db().rpc("remove_board_conversation", { p_thread_id: threadId, p_confirm_title: confirmTitle });
+  const { data, error } = await db().rpc("remove_board_conversation", { p_thread_id: threadId, p_confirm_title: confirmTitle, p_owner_id: ownerId });
   if (error) throw new Error("Could not remove this conversation. Nothing has been confirmed deleted; try again.");
   return data as DeleteThreadResult;
 }
 
-export async function getMessages(threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
+export async function getMessages(ownerId: string, threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
+  if (!(await threadState(threadId, ownerId)).exists) throw new Error("Conversation not found");
   const { data, error } = await db()
     .from("messages")
     .select(await columns())
@@ -245,7 +250,8 @@ export async function getMessages(threadId: string, afterSeq = 0, limit = 300): 
  * the whole recent thread, not just the rows requested, so a small limit
  * cannot leak an answer whose question falls outside it.
  */
-export async function readThread(threadId: string, limit = 60, viewer?: Assistant): Promise<Message[]> {
+export async function readThread(ownerId: string | null, threadId: string, limit = 60, viewer?: Assistant): Promise<Message[]> {
+  if (!(await threadState(threadId, ownerId)).exists) throw new Error("Conversation not found");
   const { data, error } = await db()
     .from("messages")
     .select(await columns())
@@ -260,7 +266,8 @@ export async function readThread(threadId: string, limit = 60, viewer?: Assistan
 }
 
 /** The existing compare request for a question in a thread, if one was already made. */
-export async function findCompare(threadId: string, replyTo: string): Promise<Message | null> {
+export async function findCompare(ownerId: string, threadId: string, replyTo: string): Promise<Message | null> {
+  if (!(await threadState(threadId, ownerId)).exists) throw new Error("Conversation not found");
   if (!(await hasRounds())) return null;
   const { data, error } = await db()
     .from("messages")
@@ -290,6 +297,7 @@ async function validateCompareTarget(threadId: string, questionId: string): Prom
 }
 
 export async function postMessage(input: {
+  ownerId: string | null;
   threadId: string;
   author: Author;
   addressedTo?: Audience;
@@ -305,7 +313,9 @@ export async function postMessage(input: {
   const addressed_to: Audience = input.addressedTo ?? (input.author === "user" ? "both" : "none");
   // The person may keep writing in a paused conversation (delivered on
   // resume); an assistant caught mid-reply must not post into it.
-  if (input.author !== "user" && (await isPaused(input.threadId))) {
+  const state = await threadState(input.threadId, input.ownerId);
+  if (!state.exists) throw new Error("Conversation not found");
+  if (input.author !== "user" && state.paused) {
     throw new Error("This conversation is paused; assistants cannot post until it is resumed");
   }
   const compare = input.kind === "compare" && (await hasRounds());
@@ -319,7 +329,8 @@ export async function postMessage(input: {
   if (error) {
     // Two compare clicks at once: the unique index rejects the second; return the first.
     if (compare && input.replyTo && (error as { code?: string }).code === "23505") {
-      const existing = await findCompare(input.threadId, input.replyTo);
+      if (!input.ownerId) throw new Error("Conversation not found");
+      const existing = await findCompare(input.ownerId, input.threadId, input.replyTo);
       if (existing) return existing;
     }
     fail(error);
@@ -329,7 +340,7 @@ export async function postMessage(input: {
     // A post means the assistant is no longer "working on" the message it read.
     // The read cursor is deliberately not moved here: doing so used to skip any
     // message that arrived between the assistant's last read and its post.
-    await stampAssistant(input.author, { last_posted_at: msg.created_at, working_on_seq: null });
+    await stampAssistant(input.author, input.ownerId, { last_posted_at: msg.created_at, working_on_seq: null });
   }
   return msg;
 }
@@ -379,12 +390,12 @@ function decorate(assistant: Assistant, rows: Candidate[]) {
   }));
 }
 
-async function stampRead(assistant: Assistant, forYou: { seq: number }[], extra: Record<string, unknown>) {
+async function stampRead(assistant: Assistant, ownerId: string | null, forYou: { seq: number }[], extra: Record<string, unknown>) {
   // Reading a message addressed to this assistant marks it as being worked
   // on until the assistant posts; the page shows that instead of a blank wait.
   const stamp: Record<string, unknown> = { last_checked_at: new Date().toISOString(), ...extra };
   if (forYou.length) stamp.working_on_seq = forYou[forYou.length - 1].seq;
-  await stampAssistant(assistant, stamp);
+  await stampAssistant(assistant, ownerId, stamp);
 }
 
 /**
@@ -393,31 +404,35 @@ async function stampRead(assistant: Assistant, forYou: { seq: number }[], extra:
  * migration, delivery is tracked per message and the other assistant's answer
  * to an open round is withheld until this assistant has answered it.
  */
-export async function readNew(assistant: Assistant, limit = 100, threadId?: string): Promise<NewForAssistant> {
-  if (await hasRounds()) return readNewRounds(assistant, limit, threadId);
+export async function readNew(assistant: Assistant, ownerId: string | null, limit = 100, threadId?: string): Promise<NewForAssistant> {
+  if (await hasRounds()) return readNewRounds(assistant, ownerId, limit, threadId);
   if (threadId) throw new Error("Reading one thread needs the blind-round migration (supabase/blind-rounds.sql and thread-sessions.sql)");
-  return readNewLegacy(assistant, limit);
+  return readNewLegacy(assistant, ownerId, limit);
 }
 
 /** Single-cursor delivery, for a database without the blind-round migration. */
-async function readNewLegacy(assistant: Assistant, limit: number): Promise<NewForAssistant> {
-  const { data: cur, error: curErr } = await db().from("assistants").select("last_seen_seq").eq("name", assistant).single();
+async function readNewLegacy(assistant: Assistant, ownerId: string | null, limit: number): Promise<NewForAssistant> {
+  let curQuery = db().from("assistants").select("last_seen_seq").eq("name", assistant);
+  curQuery = ownerId ? curQuery.eq("owner_id", ownerId) : curQuery.is("owner_id", null);
+  const { data: cur, error: curErr } = await curQuery.single();
   if (curErr) fail(curErr);
   const cursor = Number(cur?.last_seen_seq ?? 0);
 
-  const { data, error } = await db()
+  let messagesQuery = db()
     .from("messages")
     .select(CANDIDATE_SELECT)
     .gt("seq", cursor)
     .neq("author", assistant)
     .order("seq", { ascending: true })
     .limit(limit);
+  messagesQuery = ownerId ? messagesQuery.eq("threads.owner_id", ownerId) : messagesQuery.is("threads.owner_id", null);
+  const { data, error } = await messagesQuery;
   if (error) fail(error);
 
   const messages = decorate(assistant, (data ?? []).map((r) => asMessage(r) as Candidate));
   const newCursor = messages.length ? messages[messages.length - 1].seq : cursor;
   const forYou = messages.filter((m) => m.for_you);
-  await stampRead(assistant, forYou, { last_seen_seq: newCursor });
+  await stampRead(assistant, ownerId, forYou, { last_seen_seq: newCursor });
 
   return {
     messages,
@@ -441,15 +456,17 @@ async function readNewLegacy(assistant: Assistant, limit: number): Promise<NewFo
  * keeps its own place. Deliveries are shared either way: a message reaches
  * exactly one reader, so run every session scoped, or one unscoped, not both.
  */
-async function readNewRounds(assistant: Assistant, limit: number, threadId?: string): Promise<NewForAssistant> {
+async function readNewRounds(assistant: Assistant, ownerId: string | null, limit: number, threadId?: string): Promise<NewForAssistant> {
   const candidateSelect = await roundCandidateSelect();
-  const { data: cur, error: curErr } = await db().from("assistants").select("floor_seq, last_seen_seq, held_seqs").eq("name", assistant).single();
+  let curQuery = db().from("assistants").select("floor_seq, last_seen_seq, held_seqs").eq("name", assistant);
+  curQuery = ownerId ? curQuery.eq("owner_id", ownerId) : curQuery.is("owner_id", null);
+  const { data: cur, error: curErr } = await curQuery.single();
   if (curErr) fail(curErr);
   const lastSeenGlobal = Number(cur?.last_seen_seq ?? 0);
   let floor = Number(cur?.floor_seq ?? 0);
   let heldBefore = ((cur?.held_seqs ?? []) as unknown[]).map(Number);
   if (threadId) {
-    const state = await threadState(threadId);
+    const state = await threadState(threadId, ownerId);
     // Removed: there is nothing to serve; tell the session to stop cleanly.
     if (!state.exists) return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, missing: true };
     // Paused: deliver nothing and move nothing, so resuming picks up
@@ -457,12 +474,13 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
     if (state.paused) return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, paused: true };
   }
   if (threadId) {
-    const { data: tf, error: tfErr } = await db()
+    let floorQuery = db()
       .from("assistant_thread_floors")
       .select("floor_seq, held_seqs")
       .eq("assistant", assistant)
-      .eq("thread_id", threadId)
-      .maybeSingle();
+      .eq("thread_id", threadId);
+    floorQuery = ownerId ? floorQuery.eq("owner_id", ownerId) : floorQuery.is("owner_id", null);
+    const { data: tf, error: tfErr } = await floorQuery.maybeSingle();
     if (tfErr) throw new Error(`Reading one thread needs supabase/thread-sessions.sql: ${tfErr.message}`);
     if (tf) {
       floor = Number(tf.floor_seq ?? 0);
@@ -489,6 +507,7 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
     .order("seq", { ascending: true })
     .limit(limit + (threadId ? 500 : 200));
   if (threadId) query = query.eq("thread_id", threadId);
+  query = ownerId ? query.eq("threads.owner_id", ownerId) : query.is("threads.owner_id", null);
   const { data, error } = await query;
   if (error) fail(error);
   const candidates = (data ?? []).map((r) => asMessage(r) as Candidate);
@@ -501,7 +520,9 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
     heldRows = (hd ?? []).map((r) => asMessage(r) as Candidate);
   }
 
-  const { data: del, error: delErr } = await db().from("assistant_deliveries").select("seq").eq("assistant", assistant).gt("seq", floor);
+  let deliveredQuery = db().from("assistant_deliveries").select("seq").eq("assistant", assistant).gt("seq", floor);
+  deliveredQuery = ownerId ? deliveredQuery.eq("owner_id", ownerId) : deliveredQuery.is("owner_id", null);
+  const { data: del, error: delErr } = await deliveredQuery;
   if (delErr) fail(delErr);
   const delivered = new Set((del ?? []).map((d) => Number(d.seq)));
 
@@ -521,7 +542,7 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
   if (out.length) {
     const { error: insErr } = await db()
       .from("assistant_deliveries")
-      .upsert(out.map((m) => ({ assistant, seq: m.seq })), { onConflict: "assistant,seq", ignoreDuplicates: true });
+      .upsert(out.map((m) => ({ owner_id: ownerId, assistant, seq: m.seq })), { onConflict: "owner_id,assistant,seq", ignoreDuplicates: true });
     if (insErr) fail(insErr);
   }
 
@@ -550,13 +571,13 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
     const { error: tfUpErr } = await db()
       .from("assistant_thread_floors")
       .upsert(
-        { assistant, thread_id: threadId, floor_seq: Math.max(floor, newFloor), held_seqs: heldNow, last_checked_at: new Date().toISOString() },
-        { onConflict: "assistant,thread_id" }
+        { owner_id: ownerId, assistant, thread_id: threadId, floor_seq: Math.max(floor, newFloor), held_seqs: heldNow, last_checked_at: new Date().toISOString() },
+        { onConflict: "owner_id,assistant,thread_id" }
       );
     if (tfUpErr) fail(tfUpErr);
-    await stampRead(assistant, forYou, { last_seen_seq: lastSeen });
+    await stampRead(assistant, ownerId, forYou, { last_seen_seq: lastSeen });
   } else {
-    await stampRead(assistant, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
+    await stampRead(assistant, ownerId, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
   }
 
   return {
@@ -592,9 +613,9 @@ async function attachCompareContext(messages: Decorated[]): Promise<NewForAssist
   });
 }
 
-export async function assistantStatus(): Promise<AssistantStatus[]> {
+export async function assistantStatus(ownerId: string): Promise<AssistantStatus[]> {
   // select("*") so a database without the newer columns still answers.
-  const { data, error } = await db().from("assistants").select("*");
+  const { data, error } = await db().from("assistants").select("*").eq("owner_id", ownerId);
   if (error) fail(error);
   return (data ?? []).map((a) => ({
     name: a.name,
@@ -609,7 +630,7 @@ export async function assistantStatus(): Promise<AssistantStatus[]> {
  * Lets an assistant re-read from a given point, e.g. after a lost reply.
  * With a thread, only that thread's deliveries and place are rewound.
  */
-export async function rewind(assistant: Assistant, toSeq: number, threadId?: string): Promise<void> {
+export async function rewind(assistant: Assistant, ownerId: string | null, toSeq: number, threadId?: string): Promise<void> {
   const to = Math.max(0, toSeq);
   if (await hasRounds()) {
     if (threadId) {
@@ -617,28 +638,38 @@ export async function rewind(assistant: Assistant, toSeq: number, threadId?: str
       if (seqErr) fail(seqErr);
       const list = (seqs ?? []).map((s) => Number(s.seq));
       if (list.length) {
-        const { error } = await db().from("assistant_deliveries").delete().eq("assistant", assistant).in("seq", list);
+        let deletion = db().from("assistant_deliveries").delete().eq("assistant", assistant).in("seq", list);
+        deletion = ownerId ? deletion.eq("owner_id", ownerId) : deletion.is("owner_id", null);
+        const { error } = await deletion;
         if (error) fail(error);
       }
-      const { data: tf } = await db().from("assistant_thread_floors").select("floor_seq, held_seqs").eq("assistant", assistant).eq("thread_id", threadId).maybeSingle();
+      let floorQuery = db().from("assistant_thread_floors").select("floor_seq, held_seqs").eq("assistant", assistant).eq("thread_id", threadId);
+      floorQuery = ownerId ? floorQuery.eq("owner_id", ownerId) : floorQuery.is("owner_id", null);
+      const { data: tf } = await floorQuery.maybeSingle();
       const held = ((tf?.held_seqs ?? []) as unknown[]).map(Number).filter((s) => s < to);
       const { error: upErr } = await db()
         .from("assistant_thread_floors")
-        .upsert({ assistant, thread_id: threadId, floor_seq: Math.min(Number(tf?.floor_seq ?? 0), Math.max(0, to - 1)), held_seqs: held }, { onConflict: "assistant,thread_id" });
+        .upsert({ owner_id: ownerId, assistant, thread_id: threadId, floor_seq: Math.min(Number(tf?.floor_seq ?? 0), Math.max(0, to - 1)), held_seqs: held }, { onConflict: "owner_id,assistant,thread_id" });
       if (upErr) fail(upErr);
       return;
     }
-    const { error } = await db().from("assistant_deliveries").delete().eq("assistant", assistant).gte("seq", to);
+    let deletion = db().from("assistant_deliveries").delete().eq("assistant", assistant).gte("seq", to);
+    deletion = ownerId ? deletion.eq("owner_id", ownerId) : deletion.is("owner_id", null);
+    const { error } = await deletion;
     if (error) fail(error);
-    const { data: cur } = await db().from("assistants").select("floor_seq, held_seqs").eq("name", assistant).single();
+    let current = db().from("assistants").select("floor_seq, held_seqs").eq("name", assistant);
+    current = ownerId ? current.eq("owner_id", ownerId) : current.is("owner_id", null);
+    const { data: cur } = await current.single();
     const held = ((cur?.held_seqs ?? []) as unknown[]).map(Number).filter((s) => s < to);
-    await stampAssistant(assistant, {
+    await stampAssistant(assistant, ownerId, {
       last_seen_seq: to,
       floor_seq: Math.min(Number(cur?.floor_seq ?? 0), Math.max(0, to - 1)),
       held_seqs: held,
     });
     return;
   }
-  const { error } = await db().from("assistants").update({ last_seen_seq: to }).eq("name", assistant);
+  let legacy = db().from("assistants").update({ last_seen_seq: to }).eq("name", assistant);
+  legacy = ownerId ? legacy.eq("owner_id", ownerId) : legacy.is("owner_id", null);
+  const { error } = await legacy;
   if (error) fail(error);
 }

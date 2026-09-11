@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { AssistantStatus, Audience, ThreadSummary } from "@/lib/board";
 import { useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 
@@ -9,6 +10,7 @@ import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
 import { RemovalStatus } from "@/components/removal-status";
+import { AccountMenu } from "@/components/account-menu";
 import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
@@ -216,6 +218,7 @@ function StatusChip({ a, now }: { a: AssistantStatus | undefined; now: number })
 }
 
 export default function BoardPage() {
+  const router = useRouter();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<BoardMessage[]>([]);
@@ -269,7 +272,7 @@ export default function BoardPage() {
     try {
     const res = await fetch("/api/threads");
     if (res.status === 401) {
-      location.href = "/login";
+      router.replace("/login");
       return;
     }
     const data = (await res.json()) as { threads?: ThreadSummary[]; error?: string };
@@ -284,7 +287,7 @@ export default function BoardPage() {
     setThreads(list);
     setActiveId((cur) => list.some((thread) => thread.id === cur) ? cur : list[0]?.id ?? null);
     } catch (cause) { setError((cause as Error).message); }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     void loadThreads();
@@ -312,7 +315,7 @@ export default function BoardPage() {
         const pauseVersionAtPoll = pauseSaveVersion.current;
         const res = await fetch(`/api/messages?thread=${activeId}&after=${lastSeq.current}`);
         if (res.status === 401) {
-          location.href = "/login";
+          router.replace("/login");
           return;
         }
         const data = (await res.json()) as { messages?: BoardMessage[]; assistants?: AssistantStatus[]; error?: string; missing?: boolean; now?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean };
@@ -361,7 +364,7 @@ export default function BoardPage() {
       stopped = true;
       clearInterval(t);
     };
-  }, [activeId, speechPlayer, acceptMessages, loadThreads, stopDictation]);
+  }, [activeId, speechPlayer, acceptMessages, loadThreads, stopDictation, router]);
 
   // Follow new messages only while the reader is already at the bottom.
   useEffect(() => {
@@ -523,6 +526,11 @@ export default function BoardPage() {
   const active = threads.find((t) => t.id === activeId);
   const status = (name: "claude" | "chatgpt") => assistants.find((a) => a.name === name);
   const stats = replyStats(rows);
+  async function logOut() {
+    await fetch("/api/auth/login", { method: "DELETE" }).catch(() => undefined);
+    router.replace("/login");
+    router.refresh();
+  }
 
   return (
     <div className="flex h-dvh overflow-hidden">
@@ -614,6 +622,8 @@ export default function BoardPage() {
                 <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-11 w-full rounded-lg border border-rose-500/40 px-3 text-left text-[13px] font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-40">Remove conversation…</button>
               </div>
             </ControlPopover>
+            <button type="button" onClick={() => void logOut()} className="hidden min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:border-zinc-500 hover:text-white sm:block">Log out</button>
+            <AccountMenu />
           </div>
           {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}

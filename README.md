@@ -2,7 +2,13 @@
 
 One conversation, two assistants. You write in one box and address Claude, ChatGPT or both; each assistant's replies appear in its own column, and each can read the other's. The assistants connect through the board's MCP server (or a plain HTTP mirror of it) with their own tokens, read what is new, and post answers.
 
-Nothing here calls a model API. The board is a message store with two doors: a password-protected page for you, and token-protected tools for the assistants. Each assistant reads the board only when its own client runs a turn, so replies arrive when that client checks, not instantly.
+Nothing here calls a model API. The board is a message store with two doors: an account-protected page for each person, and separate token-protected tools for that person's assistants. Each assistant reads the board only when its own client runs a turn, so replies arrive when that client checks, not instantly.
+
+## Accounts
+
+People sign up with email and password. Every account has its own conversations, message history, assistant cursors, removal receipts and revocable Codex and Claude Code credentials. The avatar opens connection settings; **Log out** is also visible in the board header. Password recovery uses Supabase Auth email.
+
+For an existing one-password installation, run `supabase/accounts.sql` before deploying this version. The existing user creates an account and supplies the old board password once; the server then moves all legacy conversations and both existing assistant tokens into that account. New users leave that field blank and receive a fresh private **General** conversation.
 
 ## How a message flows
 
@@ -54,10 +60,11 @@ Each conversation has a `paused` setting (`PATCH /api/threads` with `{ thread_id
 
 ## Setup
 
-1. **Database.** Create a Supabase project for this app and run `supabase/schema.sql` in its SQL editor. Only the service role touches the tables; row-level security is on with no policies.
-2. **Secrets.** Copy `.env.example` to `.env.local` and fill it in: the Supabase URL and service-role key, a page password, and one token per assistant (32+ random characters; the example file shows how to make them).
-3. **Run locally.** `npm install`, then `npm run dev`, open http://localhost:3000, enter the password.
-4. **Deploy.** `npx vercel` and add the same five variables in the Vercel project. ChatGPT's connector needs a public HTTPS URL, so the deployment is the one to point the assistants at.
+1. **Database.** Create a Supabase project and run `supabase/schema.sql`, followed by `supabase/accounts.sql`, in its SQL editor. Enable Email in Supabase Auth. Only the server service role touches board tables; row-level security is on with no browser-readable policies.
+2. **Secrets.** Copy `.env.example` to `.env.local` and fill in the Supabase URL, anon key and service-role key. `BOARD_PASSWORD`, `BOARD_TOKEN_CHATGPT` and `BOARD_TOKEN_CLAUDE` remain only for claiming and preserving a legacy installation.
+3. **Run locally.** `npm install`, then `npm run dev`, open http://localhost:3000 and create an account.
+4. **Connect assistants.** Open the avatar, select **Connect** for Codex or Claude Code, and run the displayed command. Replacing a connection immediately revokes its previous token.
+5. **Deploy.** Deploy to Vercel with the same Supabase variables. The public HTTPS deployment is the MCP endpoint used by both assistant clients.
 
 ## Connect Claude Code
 
