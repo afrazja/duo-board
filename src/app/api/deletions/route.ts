@@ -1,9 +1,9 @@
-import { cookies } from "next/headers";
+import { currentAccount } from "@/lib/account";
 import { listDeletions } from "@/lib/deletions";
-import { sessionIsValid, SESSION_COOKIE } from "@/lib/session";
 
 export async function GET() {
-  if (!await sessionIsValid((await cookies()).get(SESSION_COOKIE)?.value)) return Response.json({ error: "Not signed in" }, { status: 401 });
-  try { return Response.json({ deletions: await listDeletions() }); }
+  const account = await currentAccount();
+  if (!account) return Response.json({ error: "Not signed in" }, { status: 401 });
+  try { return Response.json({ deletions: await listDeletions(account.owner) }); }
   catch { return Response.json({ error: "Could not check session cleanup. It has not been confirmed." }, { status: 503 }); }
 }

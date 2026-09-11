@@ -1,8 +1,9 @@
 import { db } from "./db";
-import type { Assistant } from "./agent-auth";
+import type { Assistant, Owner } from "./agent-auth";
 import { BRIEF_AUDIO_GUIDANCE, normalizeSpokenReply } from "./spoken-reply";
 import { hasLinkedAnswer, nextFloor, withheldFrom, type RoundMessage } from "./rounds";
 
+export type { Owner } from "./agent-auth";
 export type Author = "user" | Assistant;
 export type Audience = "both" | Assistant | "none";
 /** 'compare' asks both assistants for a short agree / challenge / changed reply about an earlier question. */
@@ -54,44 +55,61 @@ function fail(error: { message: string } | null): never {
   throw new Error(error?.message ?? "Database error");
 }
 
-// The blind-round migration adds messages.kind, assistants.floor_seq and
-// held_seqs, and the assistant_deliveries table. It is probed rather than
-// assumed so the board keeps working, with the previous single-cursor
-// behaviour, on a database that has not run it yet. A negative probe is
-// retried after a minute so running the migration takes effect without a
-// redeploy; a positive one is final for this instance.
-let roundsProbe: { at: number; value: Promise<boolean> } | null = null;
-function hasRounds(): Promise<boolean> {
-  const stale = !roundsProbe || Date.now() - roundsProbe.at > 60_000;
-  if (stale) {
-    const value = (async () => {
-      const { error } = await db().from("assistant_deliveries").select("seq").limit(1);
-      if (error) return false;
-      const { error: kindError } = await db().from("messages").select("kind").limit(1);
-      if (kindError) return false;
-      const { error: heldError } = await db().from("assistants").select("held_seqs").limit(1);
-      return !heldError;
-    })();
-    roundsProbe = { at: Date.now(), value };
-    void value.then((ok) => {
-      if (ok && roundsProbe) roundsProbe.at = Number.POSITIVE_INFINITY;
-    });
-  }
-  return roundsProbe!.value;
+// Migrations are probed rather than assumed so the board keeps working on a
+// database that has not run one yet. A negative probe is retried after a
+// minute so running the migration takes effect without a redeploy; a positive
+// one is final for this instance.
+function probe(check: () => Promise<boolean>): () => Promise<boolean> {
+  let state: { at: number; value: Promise<boolean> } | null = null;
+  return () => {
+    if (!state || Date.now() - state.at > 60_000) {
+      const value = check();
+      const s = { at: Date.now(), value };
+      state = s;
+      void value.then((ok) => { if (ok) s.at = Number.POSITIVE_INFINITY; });
+    }
+    return state.value;
+  };
 }
 
-let answerModesProbe: { at: number; value: Promise<boolean> } | null = null;
-function hasAnswerModes(): Promise<boolean> {
-  if (!answerModesProbe || Date.now() - answerModesProbe.at > 60_000) {
-    const value = (async () => {
-      const { error } = await db().from("messages").select("blind_round").limit(1);
-      return !error;
-    })();
-    const probe = { at: Date.now(), value };
-    answerModesProbe = probe;
-    void value.then((ok) => { if (ok) probe.at = Number.POSITIVE_INFINITY; });
-  }
-  return answerModesProbe.value;
+// Blind rounds: messages.kind, assistants.floor_seq and held_seqs, assistant_deliveries.
+const hasRounds = probe(async () => {
+  const { error } = await db().from("assistant_deliveries").select("seq").limit(1);
+  if (error) return false;
+  const { error: kindError } = await db().from("messages").select("kind").limit(1);
+  if (kindError) return false;
+  const { error: heldError } = await db().from("assistants").select("held_seqs").limit(1);
+  return !heldError;
+});
+
+const hasAnswerModes = probe(async () => {
+  const { error } = await db().from("messages").select("blind_round").limit(1);
+  return !error;
+});
+
+/** Accounts: owner_id on threads and assistants (supabase/accounts.sql). */
+export const accountsReady = probe(async () => {
+  const { error } = await db().from("threads").select("owner_id").limit(1);
+  if (error) return false;
+  const { error: aErr } = await db().from("assistants").select("owner_id").limit(1);
+  return !aErr;
+});
+
+type Filterable<Q> = { eq(column: string, value: unknown): Q; is(column: string, value: null): Q };
+/** Restrict a query to one account's rows. null is the board from before accounts. */
+export function byOwner<Q extends Filterable<Q>>(query: Q, owner: Owner, column = "owner_id"): Q {
+  return owner === null ? query.is(column, null) : query.eq(column, owner);
+}
+
+/**
+ * byOwner when the migration has run; otherwise the query is left alone (there
+ * is only one board). Wrapped in an object because a query builder is itself
+ * awaitable: returning it from an async function would run it.
+ */
+async function scopeOwner<Q extends Filterable<Q>>(query: Q, owner: Owner, column = "owner_id"): Promise<{ q: Q }> {
+  if (await accountsReady()) return { q: byOwner(query, owner, column) };
+  if (owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+  return { q: query };
 }
 
 async function columns(): Promise<string> {
@@ -103,6 +121,20 @@ async function columns(): Promise<string> {
 function asMessage(row: unknown): Message {
   const r = row as Record<string, unknown>;
   return { ...(r as unknown as Message), kind: (r.kind as Kind | undefined) ?? "message", blind_round: r.blind_round !== false };
+}
+
+function asThread(t: Record<string, unknown>): ThreadSummary {
+  return {
+    id: t.id as string,
+    title: t.title as string,
+    archived: t.archived === true,
+    created_at: t.created_at as string,
+    message_count: Number(t.message_count ?? 0),
+    last_message_at: (t.last_message_at as string | null) ?? null,
+    brief_audio: Boolean(t.brief_audio),
+    blind_first_round: t.blind_first_round !== false,
+    paused: t.paused === true,
+  };
 }
 
 /**
@@ -148,63 +180,86 @@ async function roundContext(threadId: string, anchors: { reply_to: string | null
   return rows;
 }
 
+/** One account's row for one assistant. */
+async function assistantRow(owner: Owner, name: Assistant, select: string): Promise<Record<string, unknown>> {
+  const { data, error } = await (await scopeOwner(db().from("assistants").select(select).eq("name", name), owner)).q.maybeSingle();
+  if (error) fail(error);
+  if (!data) throw new Error("This account has no assistant rows yet; open the board page once while signed in");
+  return data as unknown as Record<string, unknown>;
+}
+
 /**
  * Update an assistant's row. The newer columns are additive; if a migration
  * has not been run yet, drop them and keep the rest of the stamp so cursors
  * and timestamps never stall on a missing column.
  */
-async function stampAssistant(name: Assistant, patch: Record<string, unknown>): Promise<void> {
-  const { error } = await db().from("assistants").update(patch).eq("name", name);
+async function stampAssistant(owner: Owner, name: Assistant, patch: Record<string, unknown>): Promise<void> {
+  const { error } = await (await scopeOwner(db().from("assistants").update(patch).eq("name", name), owner)).q;
   if (error && ("working_on_seq" in patch || "floor_seq" in patch || "held_seqs" in patch)) {
     const rest = { ...patch };
     delete rest.working_on_seq;
     delete rest.floor_seq;
     delete rest.held_seqs;
-    await db().from("assistants").update(rest).eq("name", name);
+    await (await scopeOwner(db().from("assistants").update(rest).eq("name", name), owner)).q;
   }
 }
 
-export async function listThreads(): Promise<ThreadSummary[]> {
-  const { data, error } = await db()
-    .from("thread_summaries")
-    .select("*")
-    .eq("archived", false)
-    .order("created_at", { ascending: false });
-  if (error) fail(error);
-  return (data ?? []).map((t) => ({ ...t, message_count: Number(t.message_count), blind_first_round: t.blind_first_round !== false, paused: t.paused === true }));
+/** Make sure an account has its two assistant rows. Idempotent. */
+export async function ensureAssistantRows(owner: string): Promise<void> {
+  const { error } = await db()
+    .from("assistants")
+    .upsert(ASSISTANTS.map((name) => ({ owner_id: owner, name })), { onConflict: "owner_id,name", ignoreDuplicates: true });
+  if (error) throw new Error(`Could not initialise the account's assistants: ${error.message}`);
 }
 
-export async function createThread(title: string): Promise<ThreadSummary> {
+export async function listThreads(owner: Owner): Promise<ThreadSummary[]> {
+  const scoped = await accountsReady();
+  if (!scoped && owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+  let query = db().from("thread_summaries").select("*").eq("archived", false);
+  if (scoped) query = owner === null ? query.is("owner_id", null) : query.eq("owner_id", owner);
+  const { data, error } = await query.order("created_at", { ascending: false });
+  if (error) fail(error);
+  return (data ?? []).map((t) => asThread(t as Record<string, unknown>));
+}
+
+export async function createThread(owner: Owner, title: string): Promise<ThreadSummary> {
   const clean = title.trim().slice(0, 120);
   if (!clean) throw new Error("A thread needs a title");
-  const { data, error } = await db().from("threads").insert({ title: clean }).select("*").single();
+  const row: Record<string, unknown> = { title: clean };
+  if (await accountsReady()) row.owner_id = owner;
+  else if (owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+  const { data, error } = await db().from("threads").insert(row).select("*").single();
   if (error) fail(error);
-  return { ...data, message_count: 0, last_message_at: null, blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
+  return asThread({ ...(data as Record<string, unknown>), message_count: 0, last_message_at: null });
 }
 
-export async function setThreadPreferences(threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
-  const { data, error } = await db().from("threads").update(preferences).eq("id", threadId).select("*").single();
+export async function setThreadPreferences(owner: Owner, threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
+  const { data, error } = await (await scopeOwner(db().from("threads").update(preferences).eq("id", threadId), owner)).q.select("*").maybeSingle();
   if (error) fail(error);
+  if (!data) throw new Error("Conversation not found");
   return { id: data.id as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-export async function getThreadPreferences(threadId: string) {
-  const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
+export async function getThreadPreferences(owner: Owner, threadId: string) {
+  const { data, error } = await (await scopeOwner(db().from("threads").select("*").eq("id", threadId), owner)).q.maybeSingle();
   if (error) fail(error);
   if (!data) throw new Error("Conversation not found");
   return { brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-/** Whether a conversation exists and whether it is paused. A database without the column answers not paused. */
-async function threadState(threadId: string): Promise<{ exists: boolean; paused: boolean }> {
-  const { data, error } = await db().from("threads").select("*").eq("id", threadId).maybeSingle();
+/** Whether a conversation exists in this account and whether it is paused. A database without the column answers not paused. */
+async function threadState(owner: Owner, threadId: string): Promise<{ exists: boolean; paused: boolean }> {
+  const { data, error } = await (await scopeOwner(db().from("threads").select("*").eq("id", threadId), owner)).q.maybeSingle();
   if (error) fail(error);
   const row = data as { paused?: boolean } | null;
   return { exists: !!row, paused: row?.paused === true };
 }
 
-async function isPaused(threadId: string): Promise<boolean> {
-  return (await threadState(threadId)).paused;
+/** Throws unless the conversation belongs to the account. */
+async function ensureThread(owner: Owner, threadId: string): Promise<{ paused: boolean }> {
+  const state = await threadState(owner, threadId);
+  if (!state.exists) throw new Error("Conversation not found");
+  return state;
 }
 
 export type DeleteThreadResult = { deleted: true; thread_id: string } | { deleted: false; reason: "not_found" | "title_mismatch" };
@@ -218,14 +273,18 @@ export type DeleteThreadResult = { deleted: true; thread_id: string } | { delete
  * pruned in the same transaction. A content-free removal receipt survives
  * until each assistant confirms permanent cleanup of its local session.
  */
-export async function deleteThread(threadId: string, confirmTitle: string): Promise<DeleteThreadResult> {
+export async function deleteThread(owner: Owner, threadId: string, confirmTitle: string): Promise<DeleteThreadResult> {
   // The receipt and cascading delete must commit together, including after retries.
-  const { data, error } = await db().rpc("remove_board_conversation", { p_thread_id: threadId, p_confirm_title: confirmTitle });
+  const args: Record<string, unknown> = { p_thread_id: threadId, p_confirm_title: confirmTitle };
+  if (await accountsReady()) args.p_owner = owner;
+  else if (owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+  const { data, error } = await db().rpc("remove_board_conversation", args);
   if (error) throw new Error("Could not remove this conversation. Nothing has been confirmed deleted; try again.");
   return data as DeleteThreadResult;
 }
 
-export async function getMessages(threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
+export async function getMessages(owner: Owner, threadId: string, afterSeq = 0, limit = 300): Promise<Message[]> {
+  await ensureThread(owner, threadId);
   const { data, error } = await db()
     .from("messages")
     .select(await columns())
@@ -245,7 +304,8 @@ export async function getMessages(threadId: string, afterSeq = 0, limit = 300): 
  * the whole recent thread, not just the rows requested, so a small limit
  * cannot leak an answer whose question falls outside it.
  */
-export async function readThread(threadId: string, limit = 60, viewer?: Assistant): Promise<Message[]> {
+export async function readThread(owner: Owner, threadId: string, limit = 60, viewer?: Assistant): Promise<Message[]> {
+  await ensureThread(owner, threadId);
   const { data, error } = await db()
     .from("messages")
     .select(await columns())
@@ -260,8 +320,9 @@ export async function readThread(threadId: string, limit = 60, viewer?: Assistan
 }
 
 /** The existing compare request for a question in a thread, if one was already made. */
-export async function findCompare(threadId: string, replyTo: string): Promise<Message | null> {
+export async function findCompare(owner: Owner, threadId: string, replyTo: string): Promise<Message | null> {
   if (!(await hasRounds())) return null;
+  await ensureThread(owner, threadId);
   const { data, error } = await db()
     .from("messages")
     .select(await columns())
@@ -290,6 +351,7 @@ async function validateCompareTarget(threadId: string, questionId: string): Prom
 }
 
 export async function postMessage(input: {
+  owner: Owner;
   threadId: string;
   author: Author;
   addressedTo?: Audience;
@@ -303,9 +365,10 @@ export async function postMessage(input: {
     : normalizeSpokenReply(input.body, input.spokenSummary);
   if (!body) throw new Error("Empty message");
   const addressed_to: Audience = input.addressedTo ?? (input.author === "user" ? "both" : "none");
-  // The person may keep writing in a paused conversation (delivered on
-  // resume); an assistant caught mid-reply must not post into it.
-  if (input.author !== "user" && (await isPaused(input.threadId))) {
+  // The conversation must be this account's. The person may keep writing in a
+  // paused one (delivered on resume); an assistant caught mid-reply must not.
+  const state = await ensureThread(input.owner, input.threadId);
+  if (input.author !== "user" && state.paused) {
     throw new Error("This conversation is paused; assistants cannot post until it is resumed");
   }
   const compare = input.kind === "compare" && (await hasRounds());
@@ -319,7 +382,7 @@ export async function postMessage(input: {
   if (error) {
     // Two compare clicks at once: the unique index rejects the second; return the first.
     if (compare && input.replyTo && (error as { code?: string }).code === "23505") {
-      const existing = await findCompare(input.threadId, input.replyTo);
+      const existing = await findCompare(input.owner, input.threadId, input.replyTo);
       if (existing) return existing;
     }
     fail(error);
@@ -329,7 +392,7 @@ export async function postMessage(input: {
     // A post means the assistant is no longer "working on" the message it read.
     // The read cursor is deliberately not moved here: doing so used to skip any
     // message that arrived between the assistant's last read and its post.
-    await stampAssistant(input.author, { last_posted_at: msg.created_at, working_on_seq: null });
+    await stampAssistant(input.owner, input.author, { last_posted_at: msg.created_at, working_on_seq: null });
   }
   return msg;
 }
@@ -361,12 +424,14 @@ export interface NewForAssistant {
   response_guidance?: string;
 }
 
-type Candidate = Message & { threads: { title: string; brief_audio: boolean } };
-const CANDIDATE_SELECT = `${BASE_COLUMNS}, threads!inner(title, brief_audio)`;
-// The migrated reader needs kind to attach the original answers to Compare.
-// Keep the legacy selection separate for databases without that column.
-async function roundCandidateSelect() {
-  return `${await columns()}, threads!inner(title, brief_audio)`;
+type Candidate = Message & { threads: { title: string; brief_audio: boolean; owner_id?: string | null } };
+// Candidates join their thread for the title and audio preference, and for the
+// owner when the accounts migration has run.
+async function threadJoin(): Promise<string> {
+  return (await accountsReady()) ? "threads!inner(title, brief_audio, owner_id)" : "threads!inner(title, brief_audio)";
+}
+async function candidateSelect(): Promise<string> {
+  return `${await columns()}, ${await threadJoin()}`;
 }
 
 function decorate(assistant: Assistant, rows: Candidate[]) {
@@ -379,45 +444,43 @@ function decorate(assistant: Assistant, rows: Candidate[]) {
   }));
 }
 
-async function stampRead(assistant: Assistant, forYou: { seq: number }[], extra: Record<string, unknown>) {
+async function stampRead(owner: Owner, assistant: Assistant, forYou: { seq: number }[], extra: Record<string, unknown>) {
   // Reading a message addressed to this assistant marks it as being worked
   // on until the assistant posts; the page shows that instead of a blank wait.
   const stamp: Record<string, unknown> = { last_checked_at: new Date().toISOString(), ...extra };
   if (forYou.length) stamp.working_on_seq = forYou[forYou.length - 1].seq;
-  await stampAssistant(assistant, stamp);
+  await stampAssistant(owner, assistant, stamp);
 }
 
 /**
- * Everything an assistant has not read yet, across all threads, oldest first,
- * with for_you marking what it is expected to answer. With the blind-round
- * migration, delivery is tracked per message and the other assistant's answer
- * to an open round is withheld until this assistant has answered it.
+ * Everything an assistant has not read yet, across all of the account's
+ * threads, oldest first, with for_you marking what it is expected to answer.
+ * With the blind-round migration, delivery is tracked per message and the
+ * other assistant's answer to an open round is withheld until this assistant
+ * has answered it.
  */
-export async function readNew(assistant: Assistant, limit = 100, threadId?: string): Promise<NewForAssistant> {
-  if (await hasRounds()) return readNewRounds(assistant, limit, threadId);
+export async function readNew(owner: Owner, assistant: Assistant, limit = 100, threadId?: string): Promise<NewForAssistant> {
+  if (await hasRounds()) return readNewRounds(owner, assistant, limit, threadId);
   if (threadId) throw new Error("Reading one thread needs the blind-round migration (supabase/blind-rounds.sql and thread-sessions.sql)");
-  return readNewLegacy(assistant, limit);
+  return readNewLegacy(owner, assistant, limit);
 }
 
 /** Single-cursor delivery, for a database without the blind-round migration. */
-async function readNewLegacy(assistant: Assistant, limit: number): Promise<NewForAssistant> {
-  const { data: cur, error: curErr } = await db().from("assistants").select("last_seen_seq").eq("name", assistant).single();
-  if (curErr) fail(curErr);
-  const cursor = Number(cur?.last_seen_seq ?? 0);
+async function readNewLegacy(owner: Owner, assistant: Assistant, limit: number): Promise<NewForAssistant> {
+  const cur = await assistantRow(owner, assistant, "last_seen_seq");
+  const cursor = Number(cur.last_seen_seq ?? 0);
 
-  const { data, error } = await db()
-    .from("messages")
-    .select(CANDIDATE_SELECT)
-    .gt("seq", cursor)
-    .neq("author", assistant)
-    .order("seq", { ascending: true })
-    .limit(limit);
+  const scoped = await accountsReady();
+  if (!scoped && owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+  let query = db().from("messages").select(`${BASE_COLUMNS}, ${await threadJoin()}`).gt("seq", cursor).neq("author", assistant);
+  if (scoped) query = owner === null ? query.is("threads.owner_id", null) : query.eq("threads.owner_id", owner);
+  const { data, error } = await query.order("seq", { ascending: true }).limit(limit);
   if (error) fail(error);
 
   const messages = decorate(assistant, (data ?? []).map((r) => asMessage(r) as Candidate));
   const newCursor = messages.length ? messages[messages.length - 1].seq : cursor;
   const forYou = messages.filter((m) => m.for_you);
-  await stampRead(assistant, forYou, { last_seen_seq: newCursor });
+  await stampRead(owner, assistant, forYou, { last_seen_seq: newCursor });
 
   return {
     messages,
@@ -435,22 +498,22 @@ async function readNewLegacy(assistant: Assistant, limit: number): Promise<NewFo
  * re-evaluated on every read, so a long-held reply never pins the floor and
  * scanning always reaches newer messages.
  *
- * Unscoped, both values live on the assistant row and cover every thread.
- * Scoped to one thread, they live in assistant_thread_floors, one row per
- * assistant and thread, so a session that reads only its own conversation
- * keeps its own place. Deliveries are shared either way: a message reaches
- * exactly one reader, so run every session scoped, or one unscoped, not both.
+ * Unscoped, both values live on the account's assistant row and cover every
+ * thread of the account. Scoped to one thread, they live in
+ * assistant_thread_floors, one row per assistant and thread, so a session that
+ * reads only its own conversation keeps its own place. Deliveries are shared
+ * either way: a message reaches exactly one reader, so run every session
+ * scoped, or one unscoped, not both.
  */
-async function readNewRounds(assistant: Assistant, limit: number, threadId?: string): Promise<NewForAssistant> {
-  const candidateSelect = await roundCandidateSelect();
-  const { data: cur, error: curErr } = await db().from("assistants").select("floor_seq, last_seen_seq, held_seqs").eq("name", assistant).single();
-  if (curErr) fail(curErr);
-  const lastSeenGlobal = Number(cur?.last_seen_seq ?? 0);
-  let floor = Number(cur?.floor_seq ?? 0);
-  let heldBefore = ((cur?.held_seqs ?? []) as unknown[]).map(Number);
+async function readNewRounds(owner: Owner, assistant: Assistant, limit: number, threadId?: string): Promise<NewForAssistant> {
+  const select = await candidateSelect();
+  const cur = await assistantRow(owner, assistant, "floor_seq, last_seen_seq, held_seqs");
+  const lastSeenGlobal = Number(cur.last_seen_seq ?? 0);
+  let floor = Number(cur.floor_seq ?? 0);
+  let heldBefore = ((cur.held_seqs ?? []) as unknown[]).map(Number);
   if (threadId) {
-    const state = await threadState(threadId);
-    // Removed: there is nothing to serve; tell the session to stop cleanly.
+    const state = await threadState(owner, threadId);
+    // Removed (or not this account's): there is nothing to serve; tell the session to stop cleanly.
     if (!state.exists) return { messages: [], pending_for_you: 0, cursor: lastSeenGlobal, held_for_you: 0, thread_id: threadId, missing: true };
     // Paused: deliver nothing and move nothing, so resuming picks up
     // everything that arrived meanwhile, in order.
@@ -483,27 +546,36 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
   // pass rows the unscoped reader may already have delivered.
   let query = db()
     .from("messages")
-    .select(candidateSelect)
+    .select(select)
     .gt("seq", floor)
-    .neq("author", assistant)
-    .order("seq", { ascending: true })
-    .limit(limit + (threadId ? 500 : 200));
+    .neq("author", assistant);
+  // A scoped read's thread was checked against the account above.
   if (threadId) query = query.eq("thread_id", threadId);
-  const { data, error } = await query;
+  else {
+    const scoped = await accountsReady();
+    if (!scoped && owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+    if (scoped) query = owner === null ? query.is("threads.owner_id", null) : query.eq("threads.owner_id", owner);
+  }
+  const { data, error } = await query.order("seq", { ascending: true }).limit(limit + (threadId ? 500 : 200));
   if (error) fail(error);
   const candidates = (data ?? []).map((r) => asMessage(r) as Candidate);
 
   let heldRows: Candidate[] = [];
   const heldToFetch = heldBefore.filter((s) => !candidates.some((c) => c.seq === s));
   if (heldToFetch.length) {
-    const { data: hd, error: hdErr } = await db().from("messages").select(candidateSelect).in("seq", heldToFetch);
+    const { data: hd, error: hdErr } = await db().from("messages").select(select).in("seq", heldToFetch);
     if (hdErr) fail(hdErr);
     heldRows = (hd ?? []).map((r) => asMessage(r) as Candidate);
   }
 
-  const { data: del, error: delErr } = await db().from("assistant_deliveries").select("seq").eq("assistant", assistant).gt("seq", floor);
-  if (delErr) fail(delErr);
-  const delivered = new Set((del ?? []).map((d) => Number(d.seq)));
+  // Deliveries are keyed by message, and a message belongs to one account, so
+  // only the candidates' own seqs matter here.
+  const delivered = new Set<number>();
+  if (candidates.length) {
+    const { data: del, error: delErr } = await db().from("assistant_deliveries").select("seq").eq("assistant", assistant).in("seq", candidates.map((c) => c.seq));
+    if (delErr) fail(delErr);
+    for (const d of del ?? []) delivered.add(Number(d.seq));
+  }
 
   const pool = [...candidates.filter((m) => !delivered.has(m.seq)), ...heldRows].sort((a, b) => a.seq - b.seq);
 
@@ -511,8 +583,8 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
   // or a compare request in the pool.
   const byThread = new Map<string, RoundMessage[]>();
   const threadIds = [...new Set(pool.filter((m) => m.author !== "user" || m.kind === "compare").map((m) => m.thread_id))];
-  for (const threadId of threadIds) {
-    byThread.set(threadId, await roundContext(threadId, pool.filter((m) => m.thread_id === threadId)));
+  for (const tid of threadIds) {
+    byThread.set(tid, await roundContext(tid, pool.filter((m) => m.thread_id === tid)));
   }
   const held = withheldFrom(assistant, pool, byThread);
 
@@ -554,9 +626,9 @@ async function readNewRounds(assistant: Assistant, limit: number, threadId?: str
         { onConflict: "assistant,thread_id" }
       );
     if (tfUpErr) fail(tfUpErr);
-    await stampRead(assistant, forYou, { last_seen_seq: lastSeen });
+    await stampRead(owner, assistant, forYou, { last_seen_seq: lastSeen });
   } else {
-    await stampRead(assistant, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
+    await stampRead(owner, assistant, forYou, { floor_seq: Math.max(floor, newFloor), last_seen_seq: lastSeen, held_seqs: heldNow });
   }
 
   return {
@@ -592,9 +664,13 @@ async function attachCompareContext(messages: Decorated[]): Promise<NewForAssist
   });
 }
 
-export async function assistantStatus(): Promise<AssistantStatus[]> {
+export async function assistantStatus(owner: Owner): Promise<AssistantStatus[]> {
   // select("*") so a database without the newer columns still answers.
-  const { data, error } = await db().from("assistants").select("*");
+  const scoped = await accountsReady();
+  if (!scoped && owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+  let query = db().from("assistants").select("*");
+  if (scoped) query = owner === null ? query.is("owner_id", null) : query.eq("owner_id", owner);
+  const { data, error } = await query;
   if (error) fail(error);
   return (data ?? []).map((a) => ({
     name: a.name,
@@ -609,10 +685,11 @@ export async function assistantStatus(): Promise<AssistantStatus[]> {
  * Lets an assistant re-read from a given point, e.g. after a lost reply.
  * With a thread, only that thread's deliveries and place are rewound.
  */
-export async function rewind(assistant: Assistant, toSeq: number, threadId?: string): Promise<void> {
+export async function rewind(owner: Owner, assistant: Assistant, toSeq: number, threadId?: string): Promise<void> {
   const to = Math.max(0, toSeq);
   if (await hasRounds()) {
     if (threadId) {
+      await ensureThread(owner, threadId);
       const { data: seqs, error: seqErr } = await db().from("messages").select("seq").eq("thread_id", threadId).gte("seq", to);
       if (seqErr) fail(seqErr);
       const list = (seqs ?? []).map((s) => Number(s.seq));
@@ -628,17 +705,26 @@ export async function rewind(assistant: Assistant, toSeq: number, threadId?: str
       if (upErr) fail(upErr);
       return;
     }
-    const { error } = await db().from("assistant_deliveries").delete().eq("assistant", assistant).gte("seq", to);
-    if (error) fail(error);
-    const { data: cur } = await db().from("assistants").select("floor_seq, held_seqs").eq("name", assistant).single();
-    const held = ((cur?.held_seqs ?? []) as unknown[]).map(Number).filter((s) => s < to);
-    await stampAssistant(assistant, {
+    // Only this account's messages: deliveries are keyed by message.
+    const scoped = await accountsReady();
+    if (!scoped && owner !== null) throw new Error("Accounts need supabase/accounts.sql on this database");
+    let seqQuery = db().from("messages").select(`seq, ${await threadJoin()}`).gte("seq", to);
+    if (scoped) seqQuery = owner === null ? seqQuery.is("threads.owner_id", null) : seqQuery.eq("threads.owner_id", owner);
+    const { data: seqs, error: seqErr } = await seqQuery;
+    if (seqErr) fail(seqErr);
+    const list = (seqs ?? []).map((s) => Number((s as unknown as { seq: unknown }).seq));
+    if (list.length) {
+      const { error } = await db().from("assistant_deliveries").delete().eq("assistant", assistant).in("seq", list);
+      if (error) fail(error);
+    }
+    const cur = await assistantRow(owner, assistant, "floor_seq, held_seqs");
+    const held = ((cur.held_seqs ?? []) as unknown[]).map(Number).filter((s) => s < to);
+    await stampAssistant(owner, assistant, {
       last_seen_seq: to,
-      floor_seq: Math.min(Number(cur?.floor_seq ?? 0), Math.max(0, to - 1)),
+      floor_seq: Math.min(Number(cur.floor_seq ?? 0), Math.max(0, to - 1)),
       held_seqs: held,
     });
     return;
   }
-  const { error } = await db().from("assistants").update({ last_seen_seq: to }).eq("name", assistant);
-  if (error) fail(error);
+  await stampAssistant(owner, assistant, { last_seen_seq: to });
 }
