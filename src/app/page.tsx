@@ -10,7 +10,7 @@ import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
 import { AccountMenu } from "@/components/account-menu";
-import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
+import { groupRows, mergeMessages, playableMessages, roundState, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -19,7 +19,6 @@ import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, 
 
 const POLL_MS = 3000;
 const NAME: Record<string, string> = { user: "You", claude: "Claude", chatgpt: "ChatGPT" };
-const NAME_TONE: Record<string, string> = { claude: "text-orange-300", chatgpt: "text-emerald-300" };
 
 function ago(iso: string | null | undefined, now: number): string {
   if (!iso) return "never";
@@ -32,16 +31,6 @@ function ago(iso: string | null | undefined, now: number): string {
 
 function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-// A duration in words: "48 s", "4 min 12 s", "1 h 05 min".
-function spell(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 60) return `${s} s`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m < 60) return r ? `${m} min ${r} s` : `${m} min`;
-  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")} min`;
 }
 
 // Dictation uses the browser's own speech recognition (Chrome, Edge, Safari).
@@ -176,20 +165,6 @@ function useDictation(onFinal: (text: string) => void) {
   return { supported, listening, interim, problem, lang, setLang: writeLang, stop, toggle: () => (listening ? stop() : start()) };
 }
 
-// Average time from the person's message to each assistant's first reply,
-// over the rows on screen. Null until an assistant has replied to something.
-function replyStats(rows: BoardRow[]): Record<"claude" | "chatgpt", number | null> {
-  const out: Record<"claude" | "chatgpt", number | null> = { claude: null, chatgpt: null };
-  for (const who of ["claude", "chatgpt"] as const) {
-    const deltas = rows
-      .filter((r) => r.user && r[who].length)
-      .map((r) => Date.parse(r[who][0].created_at) - Date.parse(r.user!.created_at))
-      .filter((d) => d >= 0);
-    if (deltas.length) out[who] = deltas.reduce((a, b) => a + b, 0) / deltas.length;
-  }
-  return out;
-}
-
 function AudienceBadge({ to }: { to: Audience }) {
   const label = to === "both" ? "to both" : to === "none" ? "note" : `to ${NAME[to]}`;
   return <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[12px] text-zinc-400">{label}</span>;
@@ -202,17 +177,6 @@ function MicIcon({ className }: { className?: string }) {
       <path d="M5 11a7 7 0 0 0 14 0" />
       <path d="M12 18v3" />
     </svg>
-  );
-}
-
-function StatusChip({ a, now }: { a: AssistantStatus | undefined; now: number }) {
-  const checkedAgo = a?.last_checked_at ? (now - Date.parse(a.last_checked_at)) / 1000 : Infinity;
-  const dot = checkedAgo < 180 ? "bg-emerald-400" : checkedAgo < 1800 ? "bg-amber-400" : "bg-zinc-600";
-  return (
-    <span className="flex items-center gap-2 text-[12px] text-zinc-400">
-      <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden />
-      checked {ago(a?.last_checked_at, now)} · answered {ago(a?.last_posted_at, now)}
-    </span>
   );
 }
 
@@ -520,13 +484,6 @@ export default function BoardPage() {
   }
 
   const active = threads.find((t) => t.id === activeId);
-  const status = (name: "claude" | "chatgpt") => assistants.find((a) => a.name === name);
-  const stats = replyStats(rows);
-  async function logOut() {
-    await fetch("/api/auth/login", { method: "DELETE" }).catch(() => undefined);
-    router.replace("/login");
-    router.refresh();
-  }
 
   return (
     <div className="flex h-dvh overflow-hidden">
@@ -592,6 +549,9 @@ export default function BoardPage() {
             </button>
           ))}
         </nav>
+        <div className="shrink-0 border-t border-zinc-800 p-3">
+          <AccountMenu />
+        </div>
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -605,21 +565,7 @@ export default function BoardPage() {
             <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`min-h-10 rounded-lg border px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-400 bg-amber-400 text-zinc-950 hover:bg-amber-300" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
               {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
             </button>
-            <ControlPopover key={activeId} label="Conversation options" trigger={<><span className="hidden sm:inline">Options</span><span aria-hidden className="sm:hidden">•••</span></>}>
-              <h2 className="mb-3 text-[14px] font-semibold">Assistant activity</h2>
-              <div className="space-y-4">{(["claude", "chatgpt"] as const).map((who) => (
-                <div key={who} className="space-y-1 text-[12px]">
-                  <span className={`font-medium ${NAME_TONE[who]}`}>{NAME[who]}</span>
-                  <StatusChip a={status(who)} now={now} />
-                  {stats[who] != null && <p className="text-zinc-400">Average first reply: {spell(stats[who]!)}</p>}
-                </div>
-              ))}</div>
-              <div className="mt-4 border-t border-zinc-700 pt-3">
-                <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-11 w-full rounded-lg border border-rose-500/40 px-3 text-left text-[13px] font-medium text-rose-300 hover:bg-rose-500/10 disabled:opacity-40">Remove conversation…</button>
-              </div>
-            </ControlPopover>
-            <button type="button" onClick={() => void logOut()} className="hidden min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:border-zinc-500 hover:text-white sm:block">Log out</button>
-            <AccountMenu />
+            <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-10 rounded-lg border border-rose-500/60 px-3 py-2 text-[13px] font-medium text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:opacity-40">Remove</button>
           </div>
           {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
