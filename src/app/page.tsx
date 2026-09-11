@@ -9,7 +9,6 @@ import { Body } from "@/components/message-body";
 import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
-import { RemovalStatus } from "@/components/removal-status";
 import { AccountMenu } from "@/components/account-menu";
 import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
 
@@ -239,7 +238,6 @@ export default function BoardPage() {
   const [awayFromLatest, setAwayFromLatest] = useState(false);
   const [newRepliesBelow, setNewRepliesBelow] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ id: string; title: string } | null>(null);
-  const [recentRemoval, setRecentRemoval] = useState<string | null>(null);
   const removedIds = useRef(new Set<string>());
   const [comparing, setComparing] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
@@ -329,7 +327,6 @@ export default function BoardPage() {
           setMessages([]);
           setDraft("");
           setActiveId(null);
-          setRecentRemoval(activeId);
           setRemoveTarget(null);
           void loadThreads();
           return;
@@ -503,7 +500,6 @@ export default function BoardPage() {
     setActiveId(null);
     setThreads((current) => current.filter((thread) => thread.id !== id));
     setRemoveTarget(null);
-    setRecentRemoval(id);
     setError("");
     void loadThreads();
   }
@@ -628,8 +624,6 @@ export default function BoardPage() {
           {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
         </header>
-
-        <RemovalStatus recentId={recentRemoval} onDismiss={() => setRecentRemoval(null)} />
 
         {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-[13px] leading-5 text-amber-200">Conversation paused. Messages wait here until you resume.</div>}
 
