@@ -31,7 +31,9 @@ begin
     held_seqs = array(select h from unnest(a.held_seqs) h
       where not exists (select 1 from public.messages m where m.seq = h and m.thread_id = p_thread_id)),
     working_on_seq = case when exists (select 1 from public.messages m where m.seq = a.working_on_seq and m.thread_id = p_thread_id)
-      then null else a.working_on_seq end;
+      then null else a.working_on_seq end
+    where exists (select 1 from public.messages m where m.thread_id = p_thread_id
+      and (m.seq = any(a.held_seqs) or m.seq = a.working_on_seq));
   delete from public.threads where id = p_thread_id;
   return jsonb_build_object('deleted', true, 'thread_id', p_thread_id);
 end;
