@@ -39,6 +39,18 @@ function ReplyBubble({ message, askedAt, playback, compact }: { message: BoardMe
   </article>;
 }
 
+function ReplyList({ messages, who, askedAt, playback, compact }: { messages: BoardMessage[]; who: "claude" | "chatgpt"; askedAt?: string; playback: Playback; compact: boolean }) {
+  const answers = messages.filter((message) => Boolean(message.reply_to));
+  const updates = messages.filter((message) => !message.reply_to);
+  return <>
+    {answers.map((message) => <ReplyBubble key={message.id} message={message} askedAt={askedAt} playback={playback} compact={compact} />)}
+    {updates.length > 0 && <details className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-3">
+      <summary className="cursor-pointer rounded text-[13px] text-zinc-400 focus-visible:outline-2 focus-visible:outline-indigo-400">{NAMES[who]} · Updates ({updates.length})</summary>
+      <div className="mt-3 space-y-3">{updates.map((message) => <ReplyBubble key={message.id} message={message} askedAt={askedAt} playback={playback} compact={false} />)}</div>
+    </details>}
+  </>;
+}
+
 function Waiting({ who, question, status, now, ready = false, ended = false, paused = false }: { who: "claude" | "chatgpt"; question?: BoardMessage; status?: AssistantStatus; now: number; ready?: boolean; ended?: boolean; paused?: boolean }) {
   const working = Boolean(question && status?.working_on_seq === question.seq);
   const waited = question ? duration(now - Date.parse(question.created_at)) : "";
@@ -49,20 +61,23 @@ function Waiting({ who, question, status, now, ready = false, ended = false, pau
   </div>;
 }
 
-export function RoundReplies({ row, state, assistants, now, playback, comparing, compareError, onCompare, paused = false }: {
+export function RoundReplies({ row, state, assistants, now, playback, comparing, compareError, onCompare, paused = false, currentBlind = true }: {
   row: BoardRow; assistants: AssistantStatus[]; now: number; playback: Playback;
   state: { held: boolean; paired: boolean };
   comparing: boolean; compareError?: string; onCompare: (question: BoardMessage) => void;
   paused?: boolean;
+  currentBlind?: boolean;
 }) {
   const blind = isFirstRound(row);
   const live = row.user?.blind_round === false;
   const revealed = !state.held;
   const compare = row.comparison;
   const compared = compare && hasBothAnswers(compare, compare.request.id);
+  const differentMode = row.user && (row.user.blind_round !== false) !== currentBlind;
   return <div className="space-y-4">
-    {blind && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/50 px-4 py-3">
-      <div><p className="text-[13px] font-medium text-zinc-200">{live ? "Live replies" : state.paired ? "Both first answers are ready" : revealed ? "Available answers" : "First answers · waiting for both"}</p><p className="mt-0.5 text-[12px] leading-5 text-zinc-500">{live ? "Answers appear as they arrive. Assistants can see earlier replies." : state.paired ? "Read each take, then compare them when you want." : revealed ? "This first round has ended. You can read the replies received." : "Both answers will appear together when they are ready."}</p></div>
+    {blind && (differentMode || state.held || state.paired || compare || compareError) && <div className="flex flex-wrap items-center justify-end gap-2 text-[12px] text-zinc-400">
+      {differentMode && <span className="mr-auto rounded-full border border-zinc-700 px-2.5 py-1" title="This question keeps the answer mode selected when it was sent">{live ? "Live answers" : "Separate answers"}</span>}
+      {state.held && <span className="mr-auto">Answers will appear together when both are ready.</span>}
       {state.paired && !compare && <button type="button" disabled={comparing || paused} title={paused ? "Resume the conversation to compare answers" : undefined} onClick={() => row.user && onCompare(row.user)} className={BUTTON}>{comparing ? "Requesting comparison…" : "Compare answers"}</button>}
       {compare && <span className="rounded-full border border-indigo-500/30 px-2.5 py-1 text-[12px] text-indigo-300">{compared ? "Comparison complete" : "Comparison requested"}</span>}
       {compareError && <p role="alert" className="w-full text-[13px] text-rose-300">{compareError} You can try Compare answers again.</p>}
@@ -70,13 +85,13 @@ export function RoundReplies({ row, state, assistants, now, playback, comparing,
     {revealed && compare && <section aria-label="Answer comparison" className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4">
       <div className="mb-3"><h3 className="text-[14px] font-semibold text-indigo-200">Compare the two takes</h3><p className="mt-1 text-[12px] leading-5 text-zinc-400">What each agrees with, challenges, and changes after reading the other. One follow-up each.</p></div>
       <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => <div className="min-w-0 space-y-3" key={who}>
-        {compare[who].length ? compare[who].map((message) => <ReplyBubble key={message.id} message={message} askedAt={compare.request.created_at} playback={playback} compact={false} />) : <Waiting who={who} question={compare.request} now={now} paused={paused} status={assistants.find((a) => a.name === who)} />}
+        {compare[who].length ? <ReplyList messages={compare[who]} who={who} askedAt={compare.request.created_at} playback={playback} compact={false} /> : <Waiting who={who} question={compare.request} now={now} paused={paused} status={assistants.find((a) => a.name === who)} />}
       </div>)}</div>
     </section>}
     <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => {
       const expected = row.user && (row.user.addressed_to === "both" || row.user.addressed_to === who);
       return <div key={who} className="min-w-0 space-y-3">
-        {revealed && row[who].map((message) => <ReplyBubble key={message.id} message={message} askedAt={row.user?.created_at} playback={playback} compact={blind} />)}
+        {revealed && <ReplyList messages={row[who]} who={who} askedAt={row.user?.created_at} playback={playback} compact={blind} />}
         {expected && (!revealed || (blind ? !hasFirstAnswer(row, who) : !row[who].length)) && <Waiting who={who} question={row.user} now={now} paused={paused} ended={blind && !live && revealed && !state.paired} ready={!revealed && hasFirstAnswer(row, who)} status={assistants.find((a) => a.name === who)} />}
       </div>;
     })}</div>

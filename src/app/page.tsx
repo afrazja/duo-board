@@ -6,6 +6,7 @@ import { useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 
 import { Body } from "@/components/message-body";
 import { RoundReplies } from "@/components/round-replies";
+import { ControlPopover } from "@/components/control-popover";
 import { groupRows, mergeMessages, playableMessages, roundState, type BoardRow, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
@@ -230,6 +231,8 @@ export default function BoardPage() {
   const [answerModeError, setAnswerModeError] = useState("");
   const [savingPause, setSavingPause] = useState(false);
   const [pauseError, setPauseError] = useState("");
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
+  const [newRepliesBelow, setNewRepliesBelow] = useState(false);
   const [comparing, setComparing] = useState<string[]>([]);
   const [compareErrors, setCompareErrors] = useState<Record<string, string>>({});
   const compareRequests = useRef(new Set<string>());
@@ -239,6 +242,7 @@ export default function BoardPage() {
   const pauseSaveVersion = useRef(0);
   const lastSeq = useRef(0);
   const scroller = useRef<HTMLDivElement>(null);
+  const followingLatest = useRef(true);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
   const dictation = useDictation(appendToDraft);
   const briefAudio = threads.find((thread) => thread.id === activeId)?.brief_audio ?? false;
@@ -289,6 +293,9 @@ export default function BoardPage() {
     let polling = false;
     lastSeq.current = 0;
     loaded.current = { threadId: activeId, messages: [] };
+    followingLatest.current = true;
+    setAwayFromLatest(false);
+    setNewRepliesBelow(false);
     setMessages([]);
     const poll = async () => {
       if (polling) return;
@@ -336,13 +343,29 @@ export default function BoardPage() {
     };
   }, [activeId, speechPlayer, acceptMessages]);
 
-  // Follow the conversation unless the reader has scrolled up.
+  // Follow new messages only while the reader is already at the bottom.
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
-    if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+    if (followingLatest.current) el.scrollTop = el.scrollHeight;
+    else if (messages.length) setNewRepliesBelow(true);
+  }, [messages.length]);
+
+  function trackReadingPosition() {
+    const el = scroller.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    followingLatest.current = nearBottom;
+    setAwayFromLatest(!nearBottom);
+    if (nearBottom) setNewRepliesBelow(false);
+  }
+
+  function jumpToLatest() {
+    followingLatest.current = true;
+    if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
+    setAwayFromLatest(false);
+    setNewRepliesBelow(false);
+  }
 
   async function send(e?: FormEvent) {
     e?.preventDefault();
@@ -466,7 +489,7 @@ export default function BoardPage() {
   const stats = replyStats(rows);
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-dvh overflow-hidden">
       {navOpen && <button type="button" aria-label="Close conversations" onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/60 md:hidden" />}
       <aside
         className={`fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 transition-transform md:static md:z-auto md:translate-x-0 md:bg-zinc-900/60 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
@@ -530,129 +553,119 @@ export default function BoardPage() {
         </nav>
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex flex-wrap items-center gap-x-6 gap-y-1 border-b border-zinc-800 px-4 py-3 md:px-5">
-          <button type="button" onClick={() => setNavOpen(true)} className="rounded-md border border-zinc-700 px-2 py-1 text-[13px] text-zinc-300 md:hidden" aria-label="Open conversations">
-            ☰
-          </button>
-          <h1 className="text-[15px] font-semibold">{active?.title ?? "…"}</h1>
-          <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`rounded-lg border px-3 py-1.5 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-500/50 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
-            {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
-          </button>
-          <div className="flex flex-wrap gap-x-5">
-            {(["claude", "chatgpt"] as const).map((who) => (
-              <span key={who} className="flex items-center gap-2 text-[12px]">
-                <span className={`font-medium ${NAME_TONE[who]}`}>{NAME[who]}</span>
-                <StatusChip a={status(who)} now={now} />
-                {stats[who] != null && (
-                  <span className="text-zinc-500" title="Average time from your message to this assistant's first reply, in this conversation">
-                    · avg reply {spell(stats[who]!)}
-                  </span>
-                )}
-              </span>
-            ))}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header aria-label="This conversation" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-zinc-800 bg-zinc-900/50 px-3 py-3 md:px-5">
+          <button type="button" onClick={() => setNavOpen(true)} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-zinc-300 md:hidden" aria-label="Open conversations">☰</button>
+          <div className="min-w-24 flex-1">
+            <h1 className="truncate text-[16px] font-semibold">{active?.title ?? "…"}</h1>
+            <p className="mt-1 text-[12px] text-zinc-400"><span className={active?.paused ? "text-amber-300" : "text-emerald-300"}>{active?.paused ? "Paused" : "Active"}</span> · {active?.blind_first_round === false ? "Live" : "Separate"}{briefAudio ? " · Brief audio" : ""}</p>
           </div>
-          {error && <span className="text-[12px] text-rose-400">{error}</span>}
+          <div role="group" aria-label="Conversation controls" className="ml-auto flex items-center gap-2">
+            <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`min-h-10 rounded-lg border px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-400 bg-amber-400 text-zinc-950 hover:bg-amber-300" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
+              {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
+            </button>
+            <ControlPopover key={activeId} label="Status details" trigger={<><span className="hidden sm:inline">Status details</span><span aria-hidden className="sm:hidden">•••</span></>}>
+              <h2 className="mb-3 text-[14px] font-semibold">Assistant activity</h2>
+              <div className="space-y-4">{(["claude", "chatgpt"] as const).map((who) => (
+                <div key={who} className="space-y-1 text-[12px]">
+                  <span className={`font-medium ${NAME_TONE[who]}`}>{NAME[who]}</span>
+                  <StatusChip a={status(who)} now={now} />
+                  {stats[who] != null && <p className="text-zinc-400">Average first reply: {spell(stats[who]!)}</p>}
+                </div>
+              ))}</div>
+            </ControlPopover>
+          </div>
+          {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
         </header>
 
-        {active?.paused && <div role="status" className="border-b border-amber-500/20 bg-amber-500/5 px-5 py-3 text-[13px] leading-6 text-amber-200"><strong>Conversation paused.</strong> Assistant checks and replies are on hold. You can leave messages here; Resume continues the same sessions with their history.</div>}
+        {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-[13px] leading-5 text-amber-200">Conversation paused. Messages wait here until you resume.</div>}
 
-        <VoiceToolbar playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
+        <VoiceToolbar key={activeId} playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
-        <div className="hidden grid-cols-2 border-b border-zinc-800 text-center text-[12px] uppercase tracking-wide text-zinc-500 lg:grid">
-          <div className="py-1.5">Claude</div>
-          <div className="border-l border-zinc-800 py-1.5">ChatGPT</div>
+        <div className="hidden shrink-0 grid-cols-2 border-b border-zinc-800 text-center text-[12px] font-medium text-zinc-400 lg:grid">
+          <div className="py-2 text-orange-300">Claude</div>
+          <div className="border-l border-zinc-800 py-2 text-emerald-300">ChatGPT</div>
         </div>
 
-        <div ref={scroller} className="flex-1 overflow-y-auto px-5 py-4">
-          {rows.length === 0 && <p className="py-20 text-center text-[15px] text-zinc-500">Nothing here yet. Write below and address one or both.</p>}
-          {rows.map((row) => (
-            <section key={row.key} className="mb-8">
-              {row.user && (
-                <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
-                  <div className="mb-2 flex items-center justify-between text-[12px] text-zinc-500">
-                    <span className="flex items-center gap-2"><span className="font-semibold text-indigo-300">You</span><AudienceBadge to={row.user.addressed_to} /></span>
-                    <span>{clock(row.user.created_at)}</span>
+        <div className="relative min-h-0 flex-1">
+          <div ref={scroller} onScroll={trackReadingPosition} aria-label="Conversation messages" className="h-full overflow-y-auto px-3 py-4 md:px-5">
+            {rows.length === 0 && <p className="py-16 text-center text-[15px] text-zinc-400">Start a conversation below. Choose who you want to answer.</p>}
+            {rows.map((row) => (
+              <section key={row.key} className="mb-7">
+                {row.user && (
+                  <div className="mb-3 rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
+                    <div className="mb-2 flex items-center justify-between gap-2 text-[12px] text-zinc-400">
+                      <span className="flex items-center gap-2"><span className="font-semibold text-indigo-300">You</span><AudienceBadge to={row.user.addressed_to} /></span>
+                      <span>{clock(row.user.created_at)}</span>
+                    </div>
+                    <Body text={row.user.body} />
                   </div>
-                  <Body text={row.user.body} />
-                </div>
-              )}
-              <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
-            </section>
-          ))}
+                )}
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+              </section>
+            ))}
+          </div>
+          {awayFromLatest && <button type="button" onClick={jumpToLatest} className="absolute bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-indigo-400/60 bg-indigo-950 px-4 py-2 text-[13px] font-medium text-indigo-100 shadow-lg focus-visible:outline-2 focus-visible:outline-indigo-400">{newRepliesBelow ? "New replies · Jump to latest ↓" : "Jump to latest ↓"}</button>}
         </div>
 
-        <form onSubmit={send} className="border-t border-zinc-800 p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <label htmlFor="answer-mode" className="text-[12px] font-medium text-zinc-300">Answer mode</label>
-            <select id="answer-mode" aria-describedby="answer-mode-help" value={active?.blind_first_round === false ? "live" : "separate"} disabled={!activeId || savingAnswerMode || sending} onChange={(e) => void changeAnswerMode(e.target.value === "separate")} className="rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-[13px] text-zinc-200 focus-visible:outline-indigo-400 disabled:opacity-50">
-              <option value="live">Live replies</option>
-              <option value="separate">Separate first answers</option>
-            </select>
-            <span role="status" className="text-[12px] text-zinc-500">{savingAnswerMode ? "Saving…" : "Saved for new questions in this conversation"}</span>
-            <p id="answer-mode-help" className="w-full text-[12px] leading-5 text-zinc-400">{active?.blind_first_round === false ? "Show each answer as it arrives. Assistants can see earlier replies." : "For questions to Both, each answers before seeing the other’s reply; reveal both together."} Existing questions keep their original mode.</p>
-            {answerModeError && <p role="alert" className="w-full text-[12px] text-rose-300">{answerModeError} Check the selected mode or try again.</p>}
+        <form aria-label="Write a message" onSubmit={send} className="shrink-0 border-t border-zinc-700 bg-zinc-900/50 p-3 md:p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div role="group" aria-label="Message audience" className="flex items-center gap-2">
+              <span className="text-[12px] font-medium text-zinc-400">To</span>
+              <div className="flex rounded-lg border border-zinc-700 bg-zinc-950 p-0.5">
+                {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => (
+                  <button key={a} type="button" aria-pressed={audience === a} onClick={() => setAudience(a)} className={`min-h-10 rounded-md px-2.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 sm:px-3 ${audience === a ? "bg-indigo-500/20 font-medium text-indigo-200 ring-1 ring-indigo-500/50" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"}`}>
+                    {a === "both" ? "Both" : a === "none" ? "Note" : NAME[a]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div role="group" aria-label="Answer delivery" className="ml-auto flex items-center gap-2">
+              <label htmlFor="answer-mode" className="text-[12px] font-medium text-zinc-400">Answers</label>
+              <select id="answer-mode" aria-label="Answer mode" title="Saved for new questions in this conversation. Existing questions keep their original mode." value={active?.blind_first_round === false ? "live" : "separate"} disabled={!activeId || savingAnswerMode || sending} onChange={(e) => void changeAnswerMode(e.target.value === "separate")} className="min-h-10 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-2 text-[13px] text-zinc-200 focus-visible:outline-indigo-400 disabled:opacity-50">
+                <option value="live">Live</option>
+                <option value="separate">Separate</option>
+              </select>
+              <ControlPopover label="Answer mode help" trigger="?" above>
+                <h2 className="mb-2 text-[14px] font-semibold">How answers arrive</h2>
+                <p className="text-[13px] leading-6 text-zinc-300"><strong>Live:</strong> show answers as they arrive. Assistants can see earlier replies.</p>
+                <p className="mt-2 text-[13px] leading-6 text-zinc-300"><strong>Separate:</strong> for questions to Both, each answers before seeing the other’s reply; reveal both together.</p>
+                <p className="mt-3 text-[12px] text-zinc-400">Saved for new questions in this conversation. Existing questions keep their original mode.</p>
+              </ControlPopover>
+            </div>
           </div>
+          {savingAnswerMode && <p role="status" className="mb-2 text-[12px] text-zinc-400">Saving answer mode…</p>}
+          {answerModeError && <p role="alert" className="mb-2 text-[12px] text-rose-300">{answerModeError} Check the selected mode or try again.</p>}
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send();
-            }}
-            rows={3}
-            placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write to the board… (Ctrl+Enter to send)"}
+            onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }}
+            rows={2}
+            placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write a message…"}
             aria-label="Message"
-            className={`mb-2 w-full resize-y rounded-lg border bg-zinc-950 px-3 py-2 text-[15px] leading-6 outline-none focus:border-indigo-500 ${dictation.listening ? "border-rose-700" : "border-zinc-700"}`}
+            className={`mb-2 block max-h-40 min-h-20 w-full resize-y rounded-xl border bg-zinc-950 px-3 py-2 text-[15px] leading-6 outline-none focus:border-indigo-500 ${dictation.listening ? "border-rose-600" : "border-zinc-700"}`}
           />
-          {dictation.interim && <p className="mb-2 px-1 text-[14px] italic text-zinc-500">{dictation.interim}…</p>}
-          {dictation.problem && <p className="mb-2 px-1 text-[12px] text-rose-400">{dictation.problem}</p>}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] text-zinc-500">To:</span>
-            {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => (
-              <button
-                key={a}
-                type="button"
-                onClick={() => setAudience(a)}
-                className={`rounded-full border px-3 py-1 text-[13px] ${audience === a ? "border-indigo-500 bg-indigo-600/20 text-indigo-200" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
-              >
-                {a === "both" ? "Both" : a === "none" ? "Note only" : NAME[a]}
-              </button>
-            ))}
-            <div className="ml-auto flex items-center gap-2">
-              {dictation.supported && (
-                <>
-                  <select
-                    value={dictation.lang}
-                    onChange={(e) => dictation.setLang(e.target.value)}
-                    disabled={dictation.listening}
-                    aria-label="Dictation language"
-                    title="Dictation language"
-                    className="rounded-md border border-zinc-800 bg-zinc-950 px-1.5 py-1 text-[12px] text-zinc-500 outline-none hover:text-zinc-300 disabled:opacity-50"
-                  >
-                    {LANGS.map(([code, label]) => (
-                      <option key={code} value={code}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={dictation.toggle}
-                    aria-pressed={dictation.listening}
-                    aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
-                    title={dictation.listening ? "Stop dictation" : "Dictate"}
-                    className={`flex h-9 w-9 items-center justify-center rounded-lg border ${dictation.listening ? "animate-pulse border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-100"}`}
-                  >
-                    <MicIcon />
-                  </button>
-                </>
-              )}
-              <button
-                type="submit"
-                disabled={sending || savingAnswerMode || !draft.trim()}
-                className="h-9 rounded-lg bg-indigo-600 px-4 text-[14px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-              >
+          {dictation.interim && <p className="mb-2 text-[14px] italic text-zinc-400">{dictation.interim}…</p>}
+          {dictation.problem && <p role="alert" className="mb-2 text-[12px] text-rose-300">{dictation.problem}</p>}
+          <div className="flex items-center justify-between gap-2">
+            <div role="group" aria-label="Dictation" className="flex items-center gap-2">
+              {dictation.supported && <>
+                <button type="button" onClick={dictation.toggle} aria-pressed={dictation.listening} aria-label={dictation.listening ? "Stop dictation" : "Dictate"} className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
+                  <MicIcon /><span>{dictation.listening ? "Stop dictation" : "Dictate"}</span>
+                </button>
+                <ControlPopover label="Dictation settings" trigger="⌄" above>
+                  <label className="block text-[13px] font-medium text-zinc-200">Dictation language
+                    <select value={dictation.lang} onChange={(e) => dictation.setLang(e.target.value)} disabled={dictation.listening} aria-label="Dictation language" className="mt-2 min-h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-[13px] text-zinc-200 disabled:opacity-50">
+                      {LANGS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                    </select>
+                  </label>
+                </ControlPopover>
+              </>}
+            </div>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="hidden text-[12px] text-zinc-500 sm:inline">Ctrl+Enter to send</span>
+              <button type="submit" disabled={sending || savingAnswerMode || !draft.trim()} className="min-h-11 rounded-lg bg-indigo-500 px-5 py-2 text-[14px] font-semibold text-white hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 disabled:opacity-40">
                 {sending ? "Sending…" : active?.paused ? "Queue message" : "Send"}
               </button>
             </div>
