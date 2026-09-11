@@ -526,7 +526,7 @@ export default function BoardPage() {
 
   return (
     <div className="flex h-dvh overflow-hidden">
-      {removeTarget && <RemoveConversation key={removeTarget.id} conversation={removeTarget} isLast={threads.length === 1} onClose={() => setRemoveTarget(null)} onRemoved={conversationRemoved} />}
+      {removeTarget && <RemoveConversation key={removeTarget.id} conversation={removeTarget} onClose={() => setRemoveTarget(null)} onRemoved={conversationRemoved} />}
       {navOpen && <button type="button" aria-label="Close conversations" onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/60 md:hidden" />}
       <aside
         className={`fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 transition-transform md:static md:z-auto md:translate-x-0 md:bg-zinc-900/60 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
