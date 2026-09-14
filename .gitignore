@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.bridge-state/
 
 # next.js
 /.next/

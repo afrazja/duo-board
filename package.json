@@ -7,10 +7,19 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "bridge:verify": "node bridge/verify-connection.mjs",
+    "bridge:verify-worker": "node bridge/verify-worker.mjs",
+    "bridge:start": "node bridge/helper.mjs",
+    "bridge:connect": "node bridge/connect.mjs",
+    "bridge:control": "node bridge/control.mjs",
+    "bridge:startup": "powershell.exe -NoProfile -File bridge/startup.ps1",
+    "test:bridge": "node --test tests/codex-client.test.mjs tests/bridge-worker.test.mjs tests/background.test.mjs",
+    "test:helper-queue": "node --experimental-strip-types --test tests/helper-queue.test.mjs tests/helper-ui.test.mjs tests/helper-cutover.test.mjs",
+    "bridge:verify-app": "node --experimental-strip-types bridge/verify-app.mjs",
     "test:voice": "node --experimental-strip-types --test tests/speech-playback.test.mjs",
     "test:rounds": "node --experimental-strip-types --test tests/rounds.test.mjs",
     "test:view": "node --experimental-strip-types --test tests/round-view.test.mjs",
-    "test": "npm run test:voice && npm run test:rounds && npm run test:view"
+    "test": "npm run test:voice && npm run test:rounds && npm run test:view && npm run test:bridge && npm run test:helper-queue"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -24,6 +33,7 @@
     "zod": "^4.6.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AssistantStatus } from "@/lib/board";
+import { helperRequestState, type HelperView } from "@/lib/helper-view";
 import { Body } from "./message-body";
 import { ListenButton, type useVoicePlayback } from "./voice-playback";
 import { hasBothAnswers, hasFirstAnswer, isFirstRound, openingExcerpt, type BoardMessage, type BoardRow } from "./round-model";
@@ -51,21 +52,26 @@ function ReplyList({ messages, who, askedAt, playback, compact }: { messages: Bo
   </>;
 }
 
-function Waiting({ who, question, status, now, ready = false, ended = false, paused = false, stopping = false, onStop }: { who: "claude" | "chatgpt"; question?: BoardMessage; status?: AssistantStatus; now: number; ready?: boolean; ended?: boolean; paused?: boolean; stopping?: boolean; onStop?: () => void }) {
+function Waiting({ who, question, status, now, ready = false, ended = false, paused = false, stopping = false, onStop, helper, onWake, waking }: { who: "claude" | "chatgpt"; question?: BoardMessage; status?: AssistantStatus; now: number; ready?: boolean; ended?: boolean; paused?: boolean; stopping?: boolean; onStop?: () => void; helper?:HelperView|null; onWake?:()=>void; waking?:boolean }) {
+  const requestState = who==="chatgpt" && question ? helperRequestState(helper??null,question.id) : null;
+  const labels:Record<string,string>={stopping:"Stopping…",stopped:"Stopped",attention:"Needs attention",offline:"Waiting for your computer",unlinked:"Conversation not linked",paused:"Paused",sleeping:"Sleeping",working:"Working on an answer",queued:"Waiting for an answer",completed:"Answer received"};
+  const details:Record<string,string>={stopping:"Stop is saved. The helper will confirm when work has ended.",stopped:"This request was stopped. Later questions can still continue.",attention:"Open the helper on your computer to review this request.",offline:"Your message is saved. Open the helper on your computer to continue.",unlinked:"Link this conversation in the helper on your computer.",paused:"Wake ChatGPT to allow new queued requests to continue.",sleeping:"ChatGPT is asleep after five idle minutes. Wake it to continue.",working:"ChatGPT is working on this request.",queued:"Your request is saved and waiting to run.",completed:"The reply has been saved and will appear here shortly."};
   const working = Boolean(question && status?.working_on_seq === question.seq);
   const waited = question ? duration(now - Date.parse(question.created_at)) : "";
   const old = ended || Boolean(question && now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000);
   const stopped = Boolean(question?.stopped_for?.includes(who));
+  const pendingHelper = ["queued","working","offline","sleeping","paused","unlinked"].includes(requestState??"");
   return <div className="rounded-xl border border-dashed border-zinc-700/80 bg-zinc-900/30 p-4 text-[13px] leading-6 text-zinc-400">
     <div className="flex items-center justify-between gap-3">
-      <p className={`font-medium ${TONES[who]}`}>{NAMES[who]} · {paused ? "Paused" : stopped ? "Stopped" : ready ? "Answer ready" : old ? "No answer received" : working ? "Working on an answer" : "Waiting for an answer"}</p>
-      {who === "chatgpt" && !paused && !stopped && !ready && !old && onStop && <button type="button" disabled={stopping} onClick={onStop} aria-label="Stop ChatGPT task" className="min-h-9 shrink-0 rounded-lg border border-rose-500/60 px-3 text-[12px] font-medium text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:cursor-wait disabled:opacity-50">{stopping ? "Stopping…" : "Stop"}</button>}
+      <p className={`font-medium ${TONES[who]}`}>{NAMES[who]} · {paused ? "Paused" : stopping || requestState==="stopping" ? "Stopping…" : stopped ? "Stopped" : ready ? "Answer ready" : requestState ? labels[requestState] : old ? "No answer received" : working ? "Working on an answer" : "Waiting for an answer"}</p>
+      {who === "chatgpt" && !paused && !stopped && !ready && (!old || pendingHelper) && onStop && <button type="button" disabled={stopping||requestState==="stopping"} onClick={onStop} aria-label="Stop ChatGPT task" className="min-h-9 shrink-0 rounded-lg border border-rose-500/60 px-3 text-[12px] font-medium text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:cursor-wait disabled:opacity-50">{stopping||requestState==="stopping" ? "Stopping…" : "Stop"}</button>}
     </div>
-    <p>{paused ? "Resume the conversation to continue." : stopped ? "This task will not receive a ChatGPT answer. New questions still work." : ready ? "Held until both answers are ready." : old ? "You can ask a new question whenever you like." : `Waiting ${waited || "for a reply"}. You can keep the conversation going.`}</p>
+    <p>{paused ? "Resume the conversation to continue." : requestState==="stopping" ? details.stopping : stopped ? "This task will not receive a ChatGPT answer. New questions still work." : ready ? "Held until both answers are ready." : requestState ? details[requestState] : old ? "You can ask a new question whenever you like." : `Waiting ${waited || "for a reply"}. You can keep the conversation going.`}</p>
+    {!paused&&!stopped&&!ready&&["sleeping","paused"].includes(requestState??"")&&onWake&&<button type="button" disabled={waking} onClick={onWake} className="mt-2 min-h-9 rounded-lg border border-emerald-500/50 px-3 text-emerald-200 disabled:opacity-50">{waking?"Waking…":"Wake ChatGPT"}</button>}
   </div>;
 }
 
-export function RoundReplies({ row, state, assistants, now, playback, comparing, compareError, onCompare, onStop, stopping = [], paused = false, currentBlind = true }: {
+export function RoundReplies({ row, state, assistants, now, playback, comparing, compareError, onCompare, onStop, stopping = [], paused = false, currentBlind = true, helper, onWake, waking }: {
   row: BoardRow; assistants: AssistantStatus[]; now: number; playback: Playback;
   state: { held: boolean; paired: boolean };
   comparing: boolean; compareError?: string; onCompare: (question: BoardMessage) => void;
@@ -73,6 +79,7 @@ export function RoundReplies({ row, state, assistants, now, playback, comparing,
   stopping?: string[];
   paused?: boolean;
   currentBlind?: boolean;
+  helper?:HelperView|null; onWake?:()=>void; waking?:boolean;
 }) {
   const blind = isFirstRound(row);
   const live = row.user?.blind_round === false;
@@ -91,7 +98,7 @@ export function RoundReplies({ row, state, assistants, now, playback, comparing,
     {revealed && compare && <section aria-label="Answer comparison" className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4">
       <div className="mb-3"><h3 className="text-[14px] font-semibold text-indigo-200">Compare the two takes</h3><p className="mt-1 text-[12px] leading-5 text-zinc-400">What each agrees with, challenges, and changes after reading the other. One follow-up each.</p></div>
       <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => <div className="min-w-0 space-y-3" key={who}>
-        {compare[who].length ? <ReplyList messages={compare[who]} who={who} askedAt={compare.request.created_at} playback={playback} compact={false} /> : <Waiting who={who} question={compare.request} now={now} paused={paused} stopping={stopping.includes(compare.request.id)} onStop={onStop ? () => onStop(compare.request) : undefined} status={assistants.find((a) => a.name === who)} />}
+        {compare[who].length ? <ReplyList messages={compare[who]} who={who} askedAt={compare.request.created_at} playback={playback} compact={false} /> : <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={compare.request} now={now} paused={paused} stopping={stopping.includes(compare.request.id)} onStop={onStop ? () => onStop(compare.request) : undefined} status={assistants.find((a) => a.name === who)} />}
       </div>)}</div>
     </section>}
     <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => {
@@ -99,7 +106,7 @@ export function RoundReplies({ row, state, assistants, now, playback, comparing,
       const expected = question && (question.addressed_to === "both" || question.addressed_to === who);
       return <div key={who} className="min-w-0 space-y-3">
         {revealed && <ReplyList messages={row[who]} who={who} askedAt={row.user?.created_at} playback={playback} compact={blind} />}
-        {expected && (!revealed || (blind ? !hasFirstAnswer(row, who) : !row[who].length)) && <Waiting who={who} question={question} now={now} paused={paused} stopping={stopping.includes(question.id)} onStop={onStop ? () => onStop(question) : undefined} ended={blind && !live && revealed && !state.paired} ready={!revealed && hasFirstAnswer(row, who)} status={assistants.find((a) => a.name === who)} />}
+        {expected && (!revealed || (blind ? !hasFirstAnswer(row, who) : !row[who].length)) && <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={question} now={now} paused={paused} stopping={stopping.includes(question.id)} onStop={onStop ? () => onStop(question) : undefined} ended={blind && !live && revealed && !state.paired} ready={!revealed && hasFirstAnswer(row, who)} status={assistants.find((a) => a.name === who)} />}
       </div>;
     })}</div>
   </div>;

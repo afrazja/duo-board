@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ControlPopover } from "./control-popover";
+import { HelperSettings } from "./helper-controls";
 
 type Assistant = "chatgpt" | "claude";
 interface Account {
@@ -14,7 +15,7 @@ interface Account {
 
 const LABEL: Record<Assistant, string> = { chatgpt: "Codex", claude: "Claude Code" };
 
-export function AccountMenu() {
+export function AccountMenu({ threadId }: { threadId?:string|null }) {
   const router = useRouter();
   const [account, setAccount] = useState<Account | null>(null);
   const [error, setError] = useState("");
@@ -66,7 +67,8 @@ export function AccountMenu() {
       <button type="button" onClick={() => void logOut()} className="min-h-10 rounded-lg border border-zinc-700 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800">Log out</button>
     </div>
     {settingsOpen && <div className="mt-4 border-t border-zinc-700 pt-4">
-      <h2 className="text-sm font-semibold text-zinc-100">Assistant connections</h2>
+      <HelperSettings key={threadId} threadId={threadId} />
+      <h2 className="mt-4 text-sm font-semibold text-zinc-100">Assistant connections</h2>
       <p className="mb-3 mt-1 text-xs leading-5 text-zinc-400">Each connection can reach only this account. Creating a new one replaces the old token.</p>
       <div className="space-y-2">
         {(["chatgpt", "claude"] as Assistant[]).map((assistant) => {

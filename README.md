@@ -64,6 +64,21 @@ While a ChatGPT card says **Waiting for an answer** or **Working on an answer**,
 
 ## Setup
 
+The optional local Codex helper is being added in stages. Its [connection and
+worker guide](bridge/README.md) and [authenticated delivery guide](bridge/REMOTE.md)
+cover steps 1–6. Step 3 adds `supabase/helper-queue.sql` after the existing schema,
+permanent-removal, and accounts migrations; this migration and the new endpoints
+are locally verified but not yet published.
+Step 4 adds `supabase/helper-inactivity.sql` after the updated queue migration;
+the [inactivity guide](bridge/INACTIVITY.md) explains the five-minute timer,
+manual Stop, and waking the same saved task.
+Step 5 adds `supabase/helper-ui.sql` after those files on the current board schema.
+The [app integration guide](bridge/INTERFACE.md) covers Settings setup, Wake/status,
+individual card Stop, and automatic message/reply delivery. The [Level 6 guide](bridge/VERIFICATION.md)
+covers real Codex verification and `supabase/helper-cutover.sql`, applied after
+the helper UI migration to prevent legacy replies. Publication and Windows
+startup remain step 7.
+
 1. **Database.** Create a Supabase project and run `supabase/schema.sql`, followed by `supabase/accounts.sql`, in its SQL editor. Enable Email in Supabase Auth. Only the server service role touches board tables; row-level security is on with no browser-readable policies.
 2. **Secrets.** Copy `.env.example` to `.env.local` and fill in the Supabase URL, anon key and service-role key. `BOARD_PASSWORD`, `BOARD_TOKEN_CHATGPT` and `BOARD_TOKEN_CLAUDE` remain only for claiming and preserving a legacy installation.
 3. **Run locally.** `npm install`, then `npm run dev`, open http://localhost:3000 and create an account.

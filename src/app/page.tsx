@@ -10,6 +10,7 @@ import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
 import { AccountMenu } from "@/components/account-menu";
+import { HelperControls, useHelper } from "@/components/helper-controls";
 import { groupRows, mergeMessages, playableMessages, roundState, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
@@ -184,6 +185,7 @@ export default function BoardPage() {
   const router = useRouter();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const helper = useHelper(activeId);
   const [messages, setMessages] = useState<BoardMessage[]>([]);
   const [assistants, setAssistants] = useState<AssistantStatus[]>([]);
   const [now, setNow] = useState(() => Date.now());
@@ -394,6 +396,7 @@ export default function BoardPage() {
       const data = await res.json() as { message?: BoardMessage; error?: string };
       if (!res.ok || !data.message) throw new Error(data.error ?? "Could not request a comparison.");
       acceptMessages(question.thread_id, [data.message]);
+      void helper.refresh();
     } catch (e) {
       setCompareErrors((current) => ({ ...current, [question.id]: (e as Error).message }));
     } finally {
@@ -416,6 +419,7 @@ export default function BoardPage() {
       const data = await res.json() as { message?: BoardMessage; error?: string };
       if (!res.ok || !data.message) throw new Error(data.error ?? "Could not stop this task");
       acceptMessages(question.thread_id, [data.message]);
+      void helper.refresh();
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
@@ -574,7 +578,7 @@ export default function BoardPage() {
           ))}
         </nav>
         <div className="shrink-0 border-t border-zinc-800 p-3">
-          <AccountMenu />
+          <AccountMenu threadId={activeId} />
         </div>
       </aside>
 
@@ -599,9 +603,9 @@ export default function BoardPage() {
 
         <VoiceToolbar key={activeId} playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
-        <div className="hidden shrink-0 grid-cols-2 border-b border-zinc-800 text-center text-[12px] font-medium text-zinc-400 lg:grid">
-          <div className="py-2 text-orange-300">Claude</div>
-          <div className="border-l border-zinc-800 py-2 text-emerald-300">ChatGPT</div>
+        <div className="grid shrink-0 grid-cols-1 border-b border-zinc-800 text-center text-[12px] font-medium text-zinc-400 lg:grid-cols-2">
+          <div className="hidden items-center justify-center py-2 text-orange-300 lg:flex">Claude</div>
+          <HelperControls helper={helper} paused={Boolean(active?.paused)} />
         </div>
 
         <div className="relative min-h-0 flex-1">
@@ -618,7 +622,7 @@ export default function BoardPage() {
                     <Body text={row.user.body} />
                   </div>
                 )}
-                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} paused={active?.paused} stopping={stoppingTasks} onStop={(question) => void stopTask(question)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} helper={helper.view} onWake={()=>void helper.wake()} waking={helper.waking} paused={active?.paused} stopping={stoppingTasks} onStop={(question) => void stopTask(question)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
               </section>
             ))}
           </div>

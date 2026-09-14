@@ -1,0 +1,5 @@
+.bridge-state
+bridge
+tests
+supabase
+.env*
