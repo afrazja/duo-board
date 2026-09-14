@@ -3,7 +3,8 @@ import { consumeLegacyClaim, exchangeBrowserSession, hasLegacyClaim, setAuthSess
 import { ensureUserWorkspace } from "@/lib/accounts";
 
 export async function POST(req: Request) {
-  const parsed = z.object({ access_token: z.string().min(20), refresh_token: z.string().min(20) }).safeParse(await req.json().catch(() => ({})));
+  // Refresh tokens are opaque; Supabase validates them, and valid tokens can be shorter than 20 characters.
+  const parsed = z.object({ access_token: z.string().min(20), refresh_token: z.string().min(1) }).safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return Response.json({ error: "The sign-in link is incomplete" }, { status: 400 });
   const result = await exchangeBrowserSession(parsed.data.access_token, parsed.data.refresh_token);
   if (result.error || !result.data.session || !result.data.user) return Response.json({ error: "This sign-in link is invalid or expired" }, { status: 401 });
