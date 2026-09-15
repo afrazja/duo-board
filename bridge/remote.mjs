@@ -115,7 +115,11 @@ export class RemoteConnection {
       if (event.action === "activity") await this.worker.handle({ id: commandId(event.id, "activity"), type: "activity", ...route }, { activityAgeMs: Math.max(0, Date.parse(serverNow) - Date.parse(event.created_at)) });
       if (event.action === "stop") await this.worker.handle({ id: commandId(event.id, "stop"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id, assistant: lane} : {}), ...route });
       if (event.action === "pause") await this.worker.handle({ id: commandId(event.id, "pause"), type: "hold", ...route });
-      if (event.action === "wake") await this.worker.handle({ id: commandId(event.id, "resume"), type: "resume", ...route });
+      if (event.action === "wake") {
+        const repairsMissingTask = /thread not found|no rollout found for thread id/i.test(this.worker.store.snapshot().conversations[ckey].attention?.chatgpt ?? "");
+        await this.worker.handle({ id: commandId(event.id, "resume"), type: "resume", ...route });
+        if (repairsMissingTask) await this.worker.ensureSessions(route.ownerId, route.conversationId);
+      }
       if (event.message_id && event.action !== "stop") local = await this.worker.handle({ id: commandId(event.id, "enqueue"), type: "enqueue", ...route, requestId: event.message_id, assistant: lane, text: event.prompt });
     } catch (error) {
       if (["EACCES", "EPERM", "ENOSPC", "EIO", "EROFS"].includes(error.code)) throw error;

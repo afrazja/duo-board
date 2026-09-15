@@ -253,9 +253,23 @@ export class BackgroundWorker extends EventEmitter {
       this.loaded.add(thread.id);
       c = this.store.snapshot().conversations[ckey];
     } else if (!this.loaded.has(c.threadId)) {
-      const resumed = await client.call("thread/resume", { threadId: c.threadId, ...this.settings(c) });
-      if (resumed.thread.id !== c.threadId) throw Object.assign(new Error("Codex resumed a different task"), { permanent: true });
-      this.loaded.add(c.threadId);
+      const missingId = c.threadId;
+      try {
+        const resumed = await client.call("thread/resume", { threadId: missingId, ...this.settings(c) });
+        if (resumed.thread.id !== missingId) throw Object.assign(new Error("Codex resumed a different task"), { permanent: true });
+        this.loaded.add(missingId);
+      } catch (error) {
+        if (!/thread not found|no rollout found for thread id/i.test(error.message)) throw error;
+        // thread/start can return an ID before Codex has written its rollout.
+        // If that empty task disappears after a restart, replace the unusable
+        // mapping once instead of leaving the conversation permanently stuck.
+        await this.store.change((s) => {
+          const entry = s.conversations[ckey];
+          if (entry.threadId === missingId) { entry.threadId = null; entry.creating = false; }
+        });
+        this.loaded.delete(missingId);
+        return this.task(client, ckey);
+      }
     }
     // Keep the visible Codex sidebar title aligned with Duo Board. Naming is
     // helpful metadata, so a transient naming failure must not block answers.

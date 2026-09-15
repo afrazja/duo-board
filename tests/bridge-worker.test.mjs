@@ -55,6 +55,23 @@ test("Codex tasks use the Duo Board title and follow later conversation renames"
   assert.equal(backend.created, 1);
 });
 
+test("a saved task with no Codex rollout is replaced once and work continues", async (t) => {
+  const { worker, store, backend, command, route, directory, options } = await setup(t);
+  const missingId = await worker.ensureTask(route.ownerId, route.conversationId);
+  await worker.close();
+  backend.threads.delete(missingId);
+
+  const recovered = await new StateStore(directory).load();
+  const restarted = new BackgroundWorker(recovered, options);
+  await restarted.start(); t.after(() => restarted.close());
+  const next = await restarted.handle(command("enqueue", { requestId: randomUUID(), text: "continue after missing rollout" }));
+  await until(() => job(recovered, next.jobKey).status === "completed");
+  const replacementId = recovered.snapshot().conversations[keyFor(route.ownerId, route.conversationId)].threadId;
+  assert.notEqual(replacementId, missingId);
+  assert.equal(backend.created, 2);
+  assert.deepEqual(backend.starts.map((entry) => entry.threadId), [replacementId]);
+});
+
 test("card Stop interrupts only its request and later questions continue in the same task",async(t)=>{
   const {worker,store,backend,command}=await setup(t);
   const requestId=randomUUID();
