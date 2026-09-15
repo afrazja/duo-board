@@ -97,10 +97,17 @@ test("helper queue security and persistence", async (t)=>{
       await f.pg.exec(`set role ${role}`);
       try {
         await assert.rejects(f.pg.query("select * from public.helper_requests"),/permission denied/);
+        await assert.rejects(f.pg.query("select * from public.helper_pairings"),/permission denied/);
         await assert.rejects(f.pg.query("select public.helper_device($1,$2,'receive','{}')",[hash(f.connections[0].token),f.instances[0]]),/permission denied/);
         await assert.rejects(f.pg.query("select public.helper_user($1,'status','{}')",[f.owners[0]]),/permission denied/);
       } finally { await f.pg.exec("reset role"); }
     }
+  });
+  await t.test("installer pairings have no readable token column and reject malformed encrypted values",async()=>{
+    const columns=(await f.pg.query("select column_name from information_schema.columns where table_schema='public' and table_name='helper_pairings' order by column_name")).rows.map((row)=>row.column_name);
+    assert.equal(columns.includes("token"),false);
+    assert.ok(columns.includes("token_cipher"));
+    await assert.rejects(f.pg.query("insert into helper_pairings(code_hash,owner_id,device_id,conversation_id,origin,token_cipher,token_iv,token_tag,expires_at) values($1,$2,$3,$4,'https://board.test','not valid','bad','bad',now()+interval '10 minutes')",["a".repeat(64),f.owners[0],f.connections[0].deviceId,f.threads[0]]),/check constraint/);
   });
   await t.test("a second instance, legacy token, URL token, and revoked key are rejected",async()=>{
     assert.equal((await f.http("/api/agent/helper","POST",{action:"receive",instance_id:randomUUID()},{owner:null,token:f.connections[0].token})).status,409);

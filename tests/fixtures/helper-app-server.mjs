@@ -56,6 +56,10 @@ const server=createServer(async(req,res)=>{
       const output=await f.handlers.device(new Request(url,{method:req.method,headers:req.headers,body:raw}));
       res.writeHead(output.status,Object.fromEntries(output.headers));return res.end(Buffer.from(await output.arrayBuffer()));
     }
+    if(pathname==="/api/helper/pair") {
+      if(req.method!=="POST"||body.thread_id!==thread)return send({error:"Open the helper preview conversation first"},400);
+      return send({pairing_code:`duo_pair_${"p".repeat(43)}`,installer_url:"/downloads/DuoBoardHelperSetup.exe"},201);
+    }
     if(pathname==="/api/helper" || pathname==="/api/helper/requests") {
       const headers={...req.headers,"x-test-account":owner};
       const request=new Request(url,{method:req.method,headers,...(raw.length?{body:raw}:{})});
@@ -88,9 +92,12 @@ const server=createServer(async(req,res)=>{
       return send({messages,assistants:[],paused:prefs.paused,brief_audio:prefs.brief_audio,blind_first_round:prefs.blind_first_round,now:new Date().toISOString()});
     }
     // Never forward API or authentication traffic to the real Next server.
-    if(pathname!=="/"&&!pathname.startsWith("/_next/")&&pathname!=="/favicon.ico")return send({error:"Not part of this fixture"},404);
+    if(pathname!=="/"&&!pathname.startsWith("/_next/")&&!pathname.startsWith("/downloads/")&&pathname!=="/favicon.ico")return send({error:"Not part of this fixture"},404);
     const upstream=await fetch(`${nextOrigin}${req.url}`,{headers:{cookie:"duo_access_token=synthetic-preview"},redirect:"manual"});
-    res.writeHead(upstream.status,{"Content-Type":upstream.headers.get("content-type")??"text/plain"});res.end(Buffer.from(await upstream.arrayBuffer()));
+    const responseHeaders={"Content-Type":upstream.headers.get("content-type")??"text/plain"};
+    if(pathname.startsWith("/downloads/")&&upstream.headers.get("content-disposition"))responseHeaders["Content-Disposition"]=upstream.headers.get("content-disposition");
+    if(pathname.startsWith("/downloads/")&&upstream.headers.get("content-length"))responseHeaders["Content-Length"]=upstream.headers.get("content-length");
+    res.writeHead(upstream.status,responseHeaders);res.end(Buffer.from(await upstream.arrayBuffer()));
   }catch(error){console.error("Fixture request:",error.message);res.writeHead(500,{"Content-Type":"application/json"});res.end(JSON.stringify({error:error.message}));}
 });
 await new Promise((resolve)=>server.listen(port,"127.0.0.1",resolve));

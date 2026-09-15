@@ -6,8 +6,10 @@ import { parseArgs } from "node:util";
 import { randomUUID } from "node:crypto";
 import { acquireWorkerLock, atomicJson, prepareDirectory } from "./storage.mjs";
 
+const moduleDirectory=path.dirname(fileURLToPath(import.meta.url));
+
 /** A per-user supervisor. No listener, browser session, or model calls while unpaired. */
-export async function startBackground({directory, executable, intervalMs=1000, retryMs=30_000, helperFile=fileURLToPath(new URL("./helper.mjs",import.meta.url))}) {
+export async function startBackground({directory, executable, intervalMs=1000, retryMs=30_000, helperFile=path.join(moduleDirectory,"helper.mjs")}) {
   const control=await prepareDirectory(path.join(directory,"startup"));
   const release=await acquireWorkerLock(control);
   const instance=randomUUID();
@@ -43,9 +45,9 @@ export async function startBackground({directory, executable, intervalMs=1000, r
   return {close,done,instance};
 }
 
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+if(!process.env.DUO_COMPANION_ENTRY&&process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const {values}=parseArgs({options:{"state-dir":{type:"string"},codex:{type:"string"}}});
-  const directory=path.resolve(values["state-dir"]??fileURLToPath(new URL("../.bridge-state/helper/",import.meta.url)));
+  const directory=path.resolve(values["state-dir"]??path.join(moduleDirectory,"..",".bridge-state","helper"));
   const background=await startBackground({directory,executable:values.codex});
   process.on("SIGINT",()=>void background.close());process.on("SIGTERM",()=>void background.close());
   await background.done;

@@ -63,48 +63,57 @@ export function HelperControls({ helper, paused }: { helper:ReturnType<typeof us
 
 export function HelperSettings({ threadId }: { threadId?:string|null }) {
   const [configured,setConfigured] = useState(false);
+  const [connected,setConnected] = useState(false);
   const [busy,setBusy] = useState(false);
-  const [file,setFile] = useState<string|null>(null);
+  const [installing,setInstalling] = useState(false);
   const [error,setError] = useState("");
   useEffect(()=>{
     const controller=new AbortController();
-    void fetch("/api/helper",{signal:controller.signal,cache:"no-store"}).then(async(res)=>{const data=await res.json();if(!res.ok)throw new Error(data.error??"Setup is unavailable");setConfigured(data.configured);}).catch((cause)=>{if(!controller.signal.aborted)setError((cause as Error).message);});
+    void fetch("/api/helper",{signal:controller.signal,cache:"no-store"}).then(async(res)=>{const data=await res.json();if(!res.ok)throw new Error(data.error??"Setup is unavailable");setConfigured(data.configured);setConnected(data.connected);}).catch((cause)=>{if(!controller.signal.aborted)setError((cause as Error).message);});
     return ()=>controller.abort();
   },[]);
+  useEffect(()=>{
+    if(!installing)return;
+    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
+    const check=async()=>{
+      try {
+        const res=await fetch("/api/helper",{signal:controller.signal,cache:"no-store"});
+        const data=await res.json();
+        if(res.ok&&data.connected){setConnected(true);setInstalling(false);return;}
+      } catch {}
+      if(!controller.signal.aborted)timer=setTimeout(check,3000);
+    };
+    timer=setTimeout(check,1500);
+    return ()=>{controller.abort();clearTimeout(timer);};
+  },[installing]);
   async function connect() {
-    if(busy||!threadId)return;setBusy(true);setError("");setFile(null);
+    if(busy||!threadId)return;setBusy(true);setError("");setInstalling(false);
     try {
-      const res=await fetch("/api/helper",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"My computer"})});
-      const data=await res.json();if(!res.ok||!data.connection)throw new Error(data.error??"Could not connect helper");
-      setFile(JSON.stringify({connection:data.connection,conversationId:threadId??null},null,2));setConfigured(true);
+      const res=await fetch("/api/helper/pair",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({thread_id:threadId})});
+      const data=await res.json() as {pairing_code?:string;installer_url?:string;error?:string};
+      if(!res.ok||!data.pairing_code||!data.installer_url)throw new Error(data.error??"Could not connect helper");
+      try {
+        await navigator.clipboard.writeText(data.pairing_code);
+      } catch {
+        const field=document.createElement("textarea");field.value=data.pairing_code;field.style.position="fixed";field.style.opacity="0";
+        document.body.appendChild(field);field.select();
+        const copied=document.execCommand("copy");field.remove();
+        if(!copied)throw new Error("Allow clipboard access, then click Connect helper again.");
+      }
+      const link=document.createElement("a");link.href=data.installer_url;link.download="DuoBoardHelperSetup.exe";link.click();
+      setConfigured(true);setConnected(false);setInstalling(true);
     }catch(cause){setError((cause as Error).message);}finally{setBusy(false);}
-  }
-  function download() {
-    if(!file)return;
-    const url=URL.createObjectURL(new Blob([file],{type:"application/json"}));
-    const link=document.createElement("a");link.href=url;link.download="duo-helper-connection.json";link.click();
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
-  }
-  async function disconnect() {
-    if(busy)return;setBusy(true);setError("");
-    try {const res=await fetch("/api/helper",{method:"DELETE"});if(!res.ok)throw new Error("Could not disconnect the helper");setConfigured(false);setFile(null);}
-    catch(cause){setError((cause as Error).message);}finally{setBusy(false);}
   }
   return <section className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3" aria-label="Background helper setup">
     <h3 className="text-sm font-medium text-emerald-200">ChatGPT background helper</h3>
     <p className="my-2 text-xs leading-5 text-zinc-400">Replies run on your computer and sleep after five idle minutes. Automatic startup keeps Wake and Stop available while you are signed in to Windows.</p>
     <div className="flex flex-wrap gap-2">
-      <button type="button" disabled={busy||!threadId} onClick={()=>void connect()} className="min-h-9 rounded-lg border border-emerald-500/40 px-3 text-xs text-emerald-200 disabled:opacity-50">{busy?"Saving…":configured?"Replace helper connection":"Connect helper"}</button>
-      {configured&&<button type="button" disabled={busy} onClick={()=>void disconnect()} className="min-h-9 rounded-lg border border-zinc-700 px-3 text-xs text-zinc-300 disabled:opacity-50">Disconnect helper</button>}
+      <button type="button" disabled={busy||!threadId} onClick={()=>void connect()} className="min-h-9 rounded-lg bg-emerald-700 px-3 text-xs font-medium text-white disabled:opacity-50">{busy?"Preparing…":"Connect helper"}</button>
     </div>
     {!threadId&&<p className="mt-2 text-xs text-zinc-400">Open a conversation before connecting the helper.</p>}
-    {configured&&threadId&&!file&&<details className="mt-3 text-xs leading-5 text-zinc-400"><summary className="cursor-pointer text-emerald-200">Link this conversation on your computer</summary><p className="mt-2">If the helper is running, close it with Ctrl+C. In the Duo Board project folder, run this command and choose your workspace. Then send a new question.</p><code className="mt-2 block break-all rounded bg-zinc-950 p-2 text-[11px]">npm run bridge:connect -- --conversation {threadId}</code></details>}
-    {file&&<div className="mt-3 text-xs leading-5 text-zinc-300">
-      <p>Download your private connection file, then import it using the helper on your computer. Replacing a connection disconnects the previous helper.</p>
-      <button type="button" onClick={download} className="mt-2 min-h-9 rounded-lg bg-emerald-700 px-3 font-medium text-white">Download connection file</button>
-      <p className="mt-2 text-zinc-400">Keep this file private. The key cannot be downloaded again after closing Settings.</p>
-      <details className="mt-2"><summary className="cursor-pointer text-emerald-200">First-time setup on this computer</summary><p className="mt-2">In the Duo Board project folder, import the file and choose your workspace when asked.</p><code className="mt-2 block break-all rounded bg-zinc-950 p-2 text-[11px]">npm run bridge:connect -- --file &quot;path-to-duo-helper-connection.json&quot; --setup-only</code><p className="mt-2">Then enable automatic startup on Windows:</p><code className="mt-2 block break-all rounded bg-zinc-950 p-2 text-[11px]">npm run bridge:startup -- -Action Install</code><p className="mt-2">The helper runs in the background. You can close the terminal and browser; keep your computer awake and signed in.</p></details>
-    </div>}
+    {connected&&!installing&&<p role="status" className="mt-2 text-xs text-emerald-200">Helper connected and running.</p>}
+    {configured&&!connected&&!installing&&<p className="mt-2 text-xs text-zinc-400">Connect again to update or repair the Windows helper.</p>}
+    {installing&&<p role="status" className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs leading-5 text-emerald-100">Open <strong>DuoBoardHelperSetup.exe</strong> from Downloads and approve Windows once. It installs, pairs this conversation, and starts automatically.</p>}
     {error&&<p role="alert" className="mt-2 text-xs text-rose-300">{error}</p>}
   </section>;
 }

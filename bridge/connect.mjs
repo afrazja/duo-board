@@ -17,6 +17,11 @@ export async function importConnection({ file, conversationId, workspace, direct
   if ((await stat(source)).size > 16_000) throw new Error("Connection file is too large");
   const content = JSON.parse(await readFile(source,"utf8"));
   const bundle = z.object({ connection:remoteConfigSchema, conversationId:z.string().uuid() }).strict().parse(file ? content : {connection:content,conversationId});
+  return importConnectionBundle({bundle,workspace,directory});
+}
+
+export async function importConnectionBundle({ bundle: input, workspace, directory }) {
+  const bundle = z.object({ connection:remoteConfigSchema, conversationId:z.string().uuid() }).strict().parse(input);
   const root = await prepareDirectory(directory);
   const release = await acquireWorkerLock(root);
   try {
@@ -31,7 +36,7 @@ export async function importConnection({ file, conversationId, workspace, direct
   } finally {await release();}
 }
 
-if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
+if(!process.env.DUO_COMPANION_ENTRY && process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const {values}=parseArgs({options:{file:{type:"string"},conversation:{type:"string"},workspace:{type:"string"},"state-dir":{type:"string"},"setup-only":{type:"boolean"},help:{type:"boolean"}}});
   if(values.help || (!values.file&&!values.conversation)) console.log('npm run bridge:connect -- (--file "path-to-downloaded-file" | --conversation "conversation-UUID") [--workspace "workspace-folder"] [--state-dir "private-state-folder"]');
   else {

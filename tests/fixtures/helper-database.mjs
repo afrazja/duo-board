@@ -9,10 +9,11 @@ export async function database(t, ui = false, {waitMs=0}={}) {
   const pg = new PGlite();
   t.after(() => pg.close());
   await pg.exec("create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key, email text);");
-  for (const file of ["schema.sql", "permanent-removal.sql", "accounts.sql", "helper-queue.sql", "helper-inactivity.sql"]) await pg.exec(await sql(file));
+  for (const file of ["schema.sql", "permanent-removal.sql", "accounts.sql", "helper-queue.sql", "helper-inactivity.sql", "helper-installer.sql"]) await pg.exec(await sql(file));
   // Reapplying the migration must preserve data and function signatures.
   await pg.exec(await sql("helper-queue.sql"));
   await pg.exec(await sql("helper-inactivity.sql"));
+  await pg.exec(await sql("helper-installer.sql"));
   if (ui) { for (const file of ["helper-ui.sql", "helper-ui.sql"]) await pg.exec(await sql(file)); }
   const owners = [randomUUID(), randomUUID()];
   const threads = [randomUUID(), randomUUID()];
