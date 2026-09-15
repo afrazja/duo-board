@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { CodexClient } from "../../bridge/codex-client.mjs";
 export class Backend {
-  constructor() { this.threads = new Map(); this.starts = []; this.names = []; this.clients = 0; this.created = 0; this.materializations = 0; this.maxParallel = 0; this.busy = new Set(); this.failConnections = 0; this.conflict = false; }
+  constructor() { this.threads = new Map(); this.starts = []; this.names = []; this.sectionMoves = []; this.clients = 0; this.created = 0; this.materializations = 0; this.maxParallel = 0; this.busy = new Set(); this.failConnections = 0; this.conflict = false; }
   client() { this.clients++; return new FakeClient(this); }
 }
 class FakeClient extends EventEmitter {
@@ -38,6 +38,13 @@ class FakeClient extends EventEmitter {
       return {};
     }
     if (method === "thread/read") return { thread: structuredClone(b.threads.get(params.threadId)) };
+    if (method === "thread/list") return { data: [...b.threads.values()].filter((thread) => thread.section?.id === params.sectionId).map((thread) => structuredClone(thread)) };
+    if (method === "thread/section/move") {
+      const thread = b.threads.get(params.threadId);
+      thread.section = { id: params.sectionId, name: "Duo Board" };
+      b.sectionMoves.push(structuredClone(params));
+      return {};
+    }
     if (method === "turn/start") {
       assert.equal(b.busy.has(params.threadId), false, "Overlapping turns in the same conversation");
       const text = params.input[0].text;

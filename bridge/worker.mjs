@@ -283,6 +283,9 @@ export class BackgroundWorker extends EventEmitter {
     // Keep the visible Codex sidebar title aligned with Duo Board. Naming is
     // helpful metadata, so a transient naming failure must not block answers.
     await client.call("thread/name/set", { threadId: c.threadId, name: sessionName(c.title, c.conversationId) }).catch(() => {});
+    // If the person has organized any earlier Duo task into a custom Codex
+    // sidebar section, place later Duo tasks in that same section automatically.
+    await this.organizeTask(client, ckey, thread).catch(() => {});
     return c.threadId;
   }
 
@@ -301,6 +304,26 @@ export class BackgroundWorker extends EventEmitter {
       { after, timeoutMs: Math.min(this.turnTimeoutMs, 60_000) },
     );
     await client.call("thread/revert", { threadId, beforeTurnId: turn.id });
+  }
+
+  async organizeTask(client, ckey, thread) {
+    if (thread.section?.id) return;
+    const state = this.store.snapshot();
+    const current = state.conversations[ckey];
+    for (const candidate of Object.values(state.conversations)) {
+      if (candidate.ownerId !== current.ownerId || !candidate.threadId || candidate.threadId === current.threadId) continue;
+      let other;
+      try { ({ thread: other } = await client.call("thread/read", { threadId: candidate.threadId, includeTurns: false })); }
+      catch { continue; }
+      if (!other.section?.id) continue;
+      const listed = await client.call("thread/list", { sectionId: other.section.id, limit: 1, sortKey: "section_position", sortDirection: "asc" });
+      await client.call("thread/section/move", {
+        threadId: current.threadId,
+        sectionId: other.section.id,
+        ...(listed.data?.[0]?.id ? { beforeThreadId: listed.data[0].id } : {}),
+      });
+      return;
+    }
   }
 
   /**

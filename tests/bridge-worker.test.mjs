@@ -59,7 +59,7 @@ test("Codex tasks use the Duo Board title and follow later conversation renames"
 });
 
 test("a saved task with no Codex rollout is replaced once and work continues", async (t) => {
-  const { worker, store, backend, command, route, directory, options } = await setup(t);
+  const { worker, backend, command, route, directory, options } = await setup(t);
   const missingId = await worker.ensureTask(route.ownerId, route.conversationId);
   await worker.close();
   backend.threads.delete(missingId);
@@ -294,6 +294,17 @@ test("task provisioning creates one visible Codex task and removes its initializ
   assert.equal(backend.materializations, 1);
   assert.equal(backend.starts.length, 0);
   assert.equal(backend.threads.get(first).turns.length, 0);
+});
+
+test("new Duo tasks follow an earlier Duo task into its custom sidebar section", async (t) => {
+  const { worker, backend, route, command, directory } = await setup(t);
+  const first = await worker.ensureTask(route.ownerId, route.conversationId);
+  backend.threads.get(first).section = { id: "duo-section", name: "Duo Board" };
+  const other = { ownerId: route.ownerId, conversationId: randomUUID() };
+  await worker.handle(command("link", { cwd: directory, title: "Second conversation" }, other));
+  const second = await worker.ensureTask(other.ownerId, other.conversationId);
+  assert.deepEqual(backend.threads.get(second).section, { id: "duo-section", name: "Duo Board" });
+  assert.deepEqual(backend.sectionMoves, [{ threadId: second, sectionId: "duo-section", beforeThreadId: first }]);
 });
 
 test("a temporary connection failure reconnects and runs queued work only once", async (t) => {
