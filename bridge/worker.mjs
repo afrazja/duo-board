@@ -15,6 +15,7 @@ const guidance = {
 };
 const UNCERTAIN_MESSAGE = "The previous run's outcome is uncertain. It has not been sent again.";
 const MAX_PRESTART_ATTEMPTS = 6;
+const TASK_INITIALIZATION_PROMPT = "Connected to Duo Board. No work is requested.";
 
 /** The Claude Code session title for a board conversation; control characters and length are bounded. */
 export function sessionName(title, conversationId) {
@@ -245,10 +246,11 @@ export class BackgroundWorker extends EventEmitter {
 
   async task(client, ckey) {
     let c = this.store.snapshot().conversations[ckey];
+    let thread;
     if (!c.threadId) {
       if (c.creating) throw Object.assign(new Error("Task creation outcome is unknown; review is required"), { permanent: true });
       await this.store.change((s) => { s.conversations[ckey].creating = true; });
-      const { thread } = await client.call("thread/start", this.settings(c));
+      ({ thread } = await client.call("thread/start", { ...this.settings(c), ephemeral: false }));
       await this.store.change((s) => { const c = s.conversations[ckey]; c.threadId = thread.id; c.creating = false; });
       this.loaded.add(thread.id);
       c = this.store.snapshot().conversations[ckey];
@@ -257,6 +259,7 @@ export class BackgroundWorker extends EventEmitter {
       try {
         const resumed = await client.call("thread/resume", { threadId: missingId, ...this.settings(c) });
         if (resumed.thread.id !== missingId) throw Object.assign(new Error("Codex resumed a different task"), { permanent: true });
+        thread = resumed.thread;
         this.loaded.add(missingId);
       } catch (error) {
         if (!/thread not found|no rollout found for thread id/i.test(error.message)) throw error;
@@ -271,10 +274,33 @@ export class BackgroundWorker extends EventEmitter {
         return this.task(client, ckey);
       }
     }
+    // Codex does not show a task in its sidebar until it has received a user
+    // turn. Materialize a new empty task with a tiny stopped turn, then remove
+    // that turn from history. This creates the visible task immediately while
+    // keeping the first real Duo Board question as its first conversation turn.
+    thread ??= (await client.call("thread/read", { threadId: c.threadId, includeTurns: false })).thread;
+    if (!thread.preview?.trim()) await this.materializeTask(client, c.threadId);
     // Keep the visible Codex sidebar title aligned with Duo Board. Naming is
     // helpful metadata, so a transient naming failure must not block answers.
     await client.call("thread/name/set", { threadId: c.threadId, name: sessionName(c.title, c.conversationId) }).catch(() => {});
     return c.threadId;
+  }
+
+  async materializeTask(client, threadId) {
+    const after = client.sequence;
+    const { turn } = await client.call("turn/start", {
+      threadId,
+      clientUserMessageId: randomUUID(),
+      input: [{ type: "text", text: TASK_INITIALIZATION_PROMPT }],
+    });
+    // Stop as soon as Codex has recorded the user turn. A very fast local/model
+    // response may complete first; either outcome is removed below.
+    await client.call("turn/interrupt", { threadId, turnId: turn.id }).catch(() => {});
+    await client.waitFor(
+      (event) => event.method === "turn/completed" && event.params?.threadId === threadId && event.params?.turn?.id === turn.id,
+      { after, timeoutMs: Math.min(this.turnTimeoutMs, 60_000) },
+    );
+    await client.call("thread/revert", { threadId, beforeTurnId: turn.id });
   }
 
   /**

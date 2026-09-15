@@ -40,7 +40,7 @@ async function setup(t, { claudeEnv = {}, withClaude = true, ...overrides } = {}
   return { directory, home, store, backend, options, worker, route, command, turns, conversation };
 }
 
-test("a new conversation reserves its own Claude session beside its Codex task, without a model turn", async (t) => {
+test("a new conversation creates a visible Codex task and reserves its Claude session", async (t) => {
   const { worker, route, conversation, backend, turns } = await setup(t);
   assert.deepEqual(worker.managed, ["chatgpt", "claude"]);
   const ids = await worker.ensureSessions(route.ownerId, route.conversationId);
@@ -49,7 +49,7 @@ test("a new conversation reserves its own Claude session beside its Codex task, 
   assert.equal(conversation().claudeSessionStarted, false);
   assert.equal(conversation().threadId, ids.chatgpt);
   assert.deepEqual(await worker.ensureSessions(route.ownerId, route.conversationId), ids);
-  assert.equal(backend.created, 1); assert.equal(backend.starts.length, 0);
+  assert.equal(backend.created, 1); assert.equal(backend.materializations, 1); assert.equal(backend.starts.length, 0);
   assert.deepEqual(await turns(), []);
 });
 

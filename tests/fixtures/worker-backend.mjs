@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { CodexClient } from "../../bridge/codex-client.mjs";
 export class Backend {
-  constructor() { this.threads = new Map(); this.starts = []; this.names = []; this.clients = 0; this.created = 0; this.maxParallel = 0; this.busy = new Set(); this.failConnections = 0; this.conflict = false; }
+  constructor() { this.threads = new Map(); this.starts = []; this.names = []; this.clients = 0; this.created = 0; this.materializations = 0; this.maxParallel = 0; this.busy = new Set(); this.failConnections = 0; this.conflict = false; }
   client() { this.clients++; return new FakeClient(this); }
 }
 class FakeClient extends EventEmitter {
@@ -22,7 +22,7 @@ class FakeClient extends EventEmitter {
     const b = this.backend;
     if (method === "account/read") return { account: { type: "chatgpt" } };
     if (method === "thread/start") {
-      const thread = { id: randomUUID(), turns: [] }; b.created++; b.threads.set(thread.id, thread); this.owned.add(thread.id); return { thread: structuredClone(thread) };
+      const thread = { id: randomUUID(), turns: [], preview: "", ephemeral: params.ephemeral ?? false }; b.created++; b.threads.set(thread.id, thread); this.owned.add(thread.id); return { thread: structuredClone(thread) };
     }
     if (method === "thread/resume") {
       if (b.conflict) throw new Error("Thread already has an active writer");
@@ -43,7 +43,11 @@ class FakeClient extends EventEmitter {
       const text = params.input[0].text;
       if (text === "lost-before-start") throw new Error("Transport closed before a response was received");
       const turn = { id: randomUUID(), status: "inProgress", items: [{ type: "userMessage", clientId: params.clientUserMessageId, content: params.input }] };
-      b.threads.get(params.threadId).turns.push(turn); b.starts.push({ threadId: params.threadId, text }); b.busy.add(params.threadId); b.maxParallel = Math.max(b.maxParallel, b.busy.size);
+      const thread = b.threads.get(params.threadId);
+      thread.turns.push(turn); thread.preview ||= text;
+      if (text === "Connected to Duo Board. No work is requested.") b.materializations++;
+      else b.starts.push({ threadId: params.threadId, text });
+      b.busy.add(params.threadId); b.maxParallel = Math.max(b.maxParallel, b.busy.size);
       if (text === "lost-after-start") { this.complete(params.threadId, turn); throw new Error("Connection lost after the server accepted the request"); }
       if (text === "needs-approval") setTimeout(() => this.emit("unsupportedRequest", { method: "item/commandExecution/requestApproval", threadId: params.threadId, turnId: turn.id }), 5);
       if (!text.startsWith("hold") && !text.includes("<user_request>\nhold") && text !== "needs-approval") {
@@ -56,6 +60,13 @@ class FakeClient extends EventEmitter {
       const turn = b.threads.get(params.threadId).turns.find((t) => t.id === params.turnId);
       if (turn?.status === "inProgress") this.complete(params.threadId, turn, "interrupted");
       return {};
+    }
+    if (method === "thread/revert") {
+      const thread = b.threads.get(params.threadId);
+      const index = thread.turns.findIndex((turn) => turn.id === params.beforeTurnId);
+      if (index < 0) throw new Error("Turn not found");
+      thread.turns.splice(index);
+      return { thread: structuredClone(thread) };
     }
     throw new Error(`Unexpected method ${method}`);
   }
