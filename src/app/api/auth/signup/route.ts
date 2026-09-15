@@ -9,10 +9,10 @@ export async function POST(req: Request) {
     const parsed = z.object({
       name: z.string().trim().min(1).max(80),
       email: z.string().trim().email().max(320),
-      password: z.string().min(8).max(128),
+      password: z.string().min(6).max(128),
       board_password: z.string().max(256).optional(),
     }).safeParse(await req.json());
-    if (!parsed.success) return Response.json({ error: "Enter your name, a valid email and a password of at least 8 characters" }, { status: 400 });
+    if (!parsed.success) return Response.json({ error: "Enter your name, a valid email and a password of at least 6 characters" }, { status: 400 });
 
     const store = await cookies();
     const oldSession = await sessionIsValid(store.get(SESSION_COOKIE)?.value);

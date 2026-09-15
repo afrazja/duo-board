@@ -29,9 +29,9 @@ export default function ResetPasswordPage() {
     if (!res.ok) return setError(data.error ?? "Could not update the password");
     router.replace("/"); router.refresh();
   }
-  return <AuthShell title="Choose a new password" subtitle="Use at least 8 characters.">
+  return <AuthShell title="Choose a new password" subtitle="Use at least 6 characters.">
     {!ready ? <p className="py-8 text-center text-sm text-zinc-300">Checking reset link…</p> : <form onSubmit={submit} className="space-y-4">
-      <label className="block text-sm text-zinc-300">New password<input className={authInput} type="password" minLength={8} autoComplete="new-password" autoFocus required value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+      <label className="block text-sm text-zinc-300">New password<input className={authInput} type="password" minLength={6} autoComplete="new-password" autoFocus required value={password} onChange={(e) => setPassword(e.target.value)} /></label>
       {error && <p role="alert" className="text-sm text-rose-300">{error}</p>}
       <button className={authButton} disabled={busy}>{busy ? "Saving…" : "Save password"}</button>
     </form>}
