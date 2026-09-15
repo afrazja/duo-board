@@ -3,6 +3,7 @@ import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { ASSISTANTS, keyFor } from "./storage.mjs";
+import { removeConversationWorkspace } from "./workspace-cleanup.mjs";
 
 const uuid = z.string().uuid();
 const assistant = z.enum(ASSISTANTS);
@@ -11,7 +12,7 @@ const timestamp = z.iso.datetime({ offset: true });
 // `assistant` and `title` arrive from a board that knows about Claude sessions; an older board omits them.
 const eventSchema = z.object({ id: uuid, seq: z.union([z.number(), z.string()]), thread_id: uuid, action: z.enum(["wake", "message", "stop", "pause", "activity"]), message_id: uuid.nullable(), prompt: z.string().min(1).max(100_000).nullable(), status: z.literal("pending"), created_at: timestamp, assistant: assistant.optional(), title: z.string().max(200).nullable().optional() }).strict()
   .refine((e) => (e.action === "stop" || !e.message_id || Boolean(e.prompt)) && (e.action !== "message" || Boolean(e.message_id)) && (!["pause", "activity"].includes(e.action) || !e.message_id));
-const responseSchema = z.object({ device_id: uuid, owner_id: uuid, requests: z.array(eventSchema).max(50), server_now: timestamp }).strict();
+const responseSchema = z.object({ device_id: uuid, owner_id: uuid, requests: z.array(eventSchema).max(50), server_now: timestamp, removed_thread_ids: z.array(uuid).max(200).optional() }).strict();
 const ackSchema = z.object({ id: uuid, status: z.enum(["received", "stop_requested", "cancelled", "completed", "stopped", "failed", "attention"]) }).strict();
 const resultSchema = z.object({ id: uuid, status: z.enum(["completed", "stopped", "failed", "attention"]), duplicate: z.boolean() }).strict();
 const terminal = new Set(["completed", "stopped", "failed", "attention"]);
@@ -50,7 +51,7 @@ export class RemoteConnection {
       const res = await this.fetchImpl(`${this.origin}/api/agent/helper`, {
         method: "POST", redirect: "error", signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.token}` },
-        body: JSON.stringify({ action, instance_id: this.instanceId, conversations: this.report(), assistants: this.worker.managed, ...payload }),
+        body: JSON.stringify({ action, instance_id: this.instanceId, conversations: this.report(), assistants: this.worker.managed, ...(action === "receive" ? { workspace_cleanup: true } : {}), ...payload }),
       });
       if ([401, 403, 409].includes(res.status)) throw new RemoteError("Helper access was revoked, replaced, or belongs to another instance. Reconnect it from your account.", true);
       if (res.status === 404) throw Object.assign(new RemoteError("This helper request or conversation was removed", action === "receive"), { missing: action !== "receive" });
@@ -75,7 +76,7 @@ export class RemoteConnection {
   /** Safe status per conversation: IDs and modes only; no paths, prompts or answers. */
   report() {
     const s = this.worker.store.state;
-    return Object.entries(s.conversations).filter(([,c]) => c.ownerId === this.config.ownerId).slice(0,200).map(([key,c]) => {
+    return Object.entries(s.conversations).filter(([,c]) => c.ownerId === this.config.ownerId && c.workspaceCleanup?.status !== "complete" && (!c.removedAt || (c.workspaceCleanup?.nextAttemptAt ?? 0) <= Date.now())).slice(0,200).map(([key,c]) => {
       const jobs = Object.values(s.jobs).filter((j) => j.conversationKey === key);
       const lane = (name) => ({ working_on: jobs.find((j) => j.assistant === name && ["starting","running","recovering"].includes(j.status))?.requestId ?? null, queued: jobs.filter((j) => j.assistant === name && j.status === "queued").length });
       const chatgpt = lane("chatgpt"), claude = lane("claude");
@@ -99,6 +100,7 @@ export class RemoteConnection {
   async apply(event, serverNow) {
     const ckey = keyFor(this.config.ownerId, event.thread_id);
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
+    if (this.worker.store.state.conversations[ckey]?.removedAt) return;
     const lane = event.assistant ?? "chatgpt";
     let local;
     const waitingFor = event.action === "stop" ? Object.entries(this.worker.store.snapshot().jobs)
@@ -139,6 +141,7 @@ export class RemoteConnection {
     const s = this.worker.store.snapshot();
     for (const [id, event] of Object.entries(s.remote.events)) {
       if (event.reported || this.closed) continue;
+      if (s.conversations[keyFor(this.config.ownerId, event.threadId)]?.removedAt) continue;
       const job = event.jobKey ? s.jobs[event.jobKey] : null;
       if ((event.jobKey && !job) || event.waitingFor?.some((key) => !s.jobs[key])) throw new RemoteError("Saved delivery refers to missing local work; review the helper state", true);
       if (job && !terminal.has(job.status)) continue;
@@ -160,6 +163,35 @@ export class RemoteConnection {
     }
     await this.worker.store.change((s) => { if (s.remote.events[id]) s.remote.events[id].reported = true; });
   }
+  /** Missing requests alone never authorize filesystem cleanup; only removal receipts do. */
+  async cleanupRemoved(threadIds) {
+    for (const threadId of new Set(threadIds)) {
+      const ckey = keyFor(this.config.ownerId, threadId);
+      const c = this.worker.store.state.conversations[ckey];
+      if (!c || c.ownerId !== this.config.ownerId || c.workspaceCleanup?.status === "complete") continue;
+      await this.worker.store.change((s) => {
+        const entry = s.conversations[ckey];
+        entry.removedAt ??= new Date().toISOString();
+        entry.workspaceCleanup = { status: "pending", nextAttemptAt: Date.now() + 1000, error: null };
+      });
+      await this.worker.handle({ id: commandId(threadId, "workspace-removal"), type: "stop", ownerId: this.config.ownerId, conversationId: threadId });
+      // Allow active turns to finish stopping while the remote connection keeps
+      // serving other conversations. Retry on the next authenticated receipt.
+      if ([...this.worker.active.values()].some((run) => run.conversationKey === ckey)) continue;
+      try {
+        const state = this.worker.store.snapshot();
+        await removeConversationWorkspace({ workspaceRoot: state.workspaceRoot, conversation: state.conversations[ckey], conversations: state.conversations });
+        await this.worker.store.change((s) => {
+          s.conversations[ckey].workspaceCleanup = { status: "complete", completedAt: new Date().toISOString(), error: null };
+          for (const event of Object.values(s.remote.events)) if (event.threadId === threadId) event.reported = true;
+        });
+      } catch {
+        await this.worker.store.change((s) => {
+          s.conversations[ckey].workspaceCleanup = { status: "blocked", nextAttemptAt: Date.now() + 30_000, error: "The removed conversation's workspace could not be safely deleted. Cleanup will retry." };
+        });
+      }
+    }
+  }
   async stopForLostAccess() {
     this.worker.setDispatchAllowed(false);
     for (const c of Object.values(this.worker.store.snapshot().conversations)) {
@@ -174,6 +206,7 @@ export class RemoteConnection {
           const response = responseSchema.parse(await this.request("receive"));
           if (response.owner_id !== this.config.ownerId || response.device_id !== this.config.deviceId) throw new RemoteError("The board returned a different account or helper connection", true);
           this.worker.setDispatchAllowed(false);
+          await this.cleanupRemoved(response.removed_thread_ids ?? []);
           // Drain the ordered batch before starting work; Stop may cancel an earlier wake.
           for (const event of response.requests) {
             if (this.closed) break;

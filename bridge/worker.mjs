@@ -103,6 +103,7 @@ export class BackgroundWorker extends EventEmitter {
       }
       let c = s.conversations[ckey];
       let result = { accepted: true, conversationKey: ckey };
+      if (c?.removedAt && !["stop", "cancel"].includes(normalized.type)) throw new Error("This conversation was removed and cannot receive more work.");
       if (normalized.type === "link") {
         if (c) {
           if (c.cwd !== normalized.cwd || (normalized.threadId !== null && c.threadId !== normalized.threadId) || (normalized.claudeSessionId !== null && c.claudeSessionId !== normalized.claudeSessionId)) throw new Error("This conversation is already linked. Its task, session and workspace cannot be silently replaced.");
@@ -197,6 +198,7 @@ export class BackgroundWorker extends EventEmitter {
     for (const [key, job] of Object.entries(state.jobs)) {
       if (this.active.size >= this.maxConcurrent) break;
       const c = state.conversations[job.conversationKey];
+      if (c.removedAt) continue;
       if (c.mode === "sleeping") continue;
       if (TERMINAL.has(job.status) || (job.nextAttemptAt ?? 0) > Date.now() || ((c.mode !== "ready" || c.attention?.[job.assistant]) && job.status !== "recovering")) continue;
       // One run per assistant per conversation; the two assistants may answer the same question side by side.
@@ -246,6 +248,7 @@ export class BackgroundWorker extends EventEmitter {
 
   async task(client, ckey) {
     let c = this.store.snapshot().conversations[ckey];
+    if (c.removedAt) throw new Error("This conversation was removed.");
     let thread;
     if (!c.threadId) {
       if (c.creating) throw Object.assign(new Error("Task creation outcome is unknown; review is required"), { permanent: true });
@@ -334,6 +337,7 @@ export class BackgroundWorker extends EventEmitter {
    */
   async claudeSession(ckey) {
     let c = this.store.snapshot().conversations[ckey];
+    if (c.removedAt) throw new Error("This conversation was removed.");
     if (!c.claudeSessionId) {
       const id = randomUUID();
       await this.store.change((s) => {
@@ -350,12 +354,14 @@ export class BackgroundWorker extends EventEmitter {
   async ensureTask(ownerId, conversationId) {
     const ckey = keyFor(ownerId.toLowerCase(), conversationId.toLowerCase());
     if (!this.store.snapshot().conversations[ckey]) throw new Error("Link this conversation locally before creating its Codex task");
+    if (this.store.snapshot().conversations[ckey].removedAt) throw new Error("This conversation was removed.");
     return this.task(await this.connect("chatgpt"), ckey);
   }
 
   async ensureClaudeSession(ownerId, conversationId) {
     const ckey = keyFor(ownerId.toLowerCase(), conversationId.toLowerCase());
     if (!this.store.snapshot().conversations[ckey]) throw new Error("Link this conversation locally before reserving its Claude session");
+    if (this.store.snapshot().conversations[ckey].removedAt) throw new Error("This conversation was removed.");
     return this.claudeSession(ckey);
   }
 
@@ -475,11 +481,11 @@ export class BackgroundWorker extends EventEmitter {
     const snapshot = this.store.snapshot();
     const job = snapshot.jobs[key];
     const c = snapshot.conversations[job.conversationKey];
-    if (!this.running || !this.dispatchAllowed || job.stopRequested || TERMINAL.has(job.status) || c.mode !== "ready" || c.attention?.[job.assistant]) return false;
+    if (!this.running || !this.dispatchAllowed || c.removedAt || job.stopRequested || TERMINAL.has(job.status) || c.mode !== "ready" || c.attention?.[job.assistant]) return false;
     return this.store.change((s) => {
       const j = s.jobs[key];
       const entry = s.conversations[j.conversationKey];
-      if (!this.dispatchAllowed || j.stopRequested || j.status !== "queued" || entry.mode !== "ready" || entry.attention?.[j.assistant]) return false;
+      if (!this.dispatchAllowed || entry.removedAt || j.stopRequested || j.status !== "queued" || entry.mode !== "ready" || entry.attention?.[j.assistant]) return false;
       j.status = "starting";
       return true;
     });

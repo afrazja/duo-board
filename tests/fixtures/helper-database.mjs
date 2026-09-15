@@ -32,7 +32,11 @@ export async function database(t, ui = false, {waitMs=0}={}) {
       return {data:rows[0].result,error:null};
     } catch(error) { return {data:null,error:{message:error.message,code:error.code}}; }
   };
-  const handlers = helperHandlers({ rpc, waitMs, requireUser:async (req)=>{
+  const listRemovedThreads = async (ownerId, threadIds) => {
+    const {rows} = await pg.query("select thread_id from thread_deletions where owner_id=$1 and thread_id=any($2::uuid[]) limit 200", [ownerId, threadIds]);
+    return rows.map((row) => row.thread_id);
+  };
+  const handlers = helperHandlers({ rpc, listRemovedThreads, waitMs, requireUser:async (req)=>{
     // The production route supplies requireUser() backed by Supabase Auth.
     const who=req.headers.get("x-test-account"); if(!owners.includes(who)) throw new Error("AUTH_REQUIRED"); return {id:who};
   }});
@@ -48,5 +52,5 @@ export async function database(t, ui = false, {waitMs=0}={}) {
   const instances=[randomUUID(),randomUUID()];
   const device=(action,args={},i=0)=>http("/api/agent/helper","POST",{action,instance_id:instances[i],...args},{token:connections[i].token,owner:null});
   const enqueue=(action="message",extra={})=>http("/api/helper/requests","POST",{id:randomUUID(),thread_id:threads[0],action,...(action==="message"?{message_id:messages[0]}:{}),...extra});
-  return {pg,owners,threads,messages,connections,instances,handlers,http,device,enqueue};
+  return {pg,owners,threads,messages,connections,instances,handlers,http,device,enqueue,rpc,listRemovedThreads};
 }

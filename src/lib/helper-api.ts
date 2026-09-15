@@ -5,6 +5,7 @@ type RpcResult = { data: unknown; error: { message: string; code?: string } | nu
 type Dependencies = {
   rpc: (name: string, args: Record<string, unknown>) => PromiseLike<RpcResult>;
   requireUser: (request: Request) => Promise<{ id: string }>;
+  listRemovedThreads?: (ownerId: string, threadIds: string[]) => Promise<string[]>;
   waitMs?: number;
 };
 const id = z.string().uuid();
@@ -17,7 +18,7 @@ const assistants = z.array(assistant).max(2).optional();
 const requestSchema = z.object({ id, thread_id: id, action: z.enum(["wake", "message", "stop", "activity"]), message_id: id.optional(), assistant: assistant.optional() }).strict()
   .refine((r) => (r.action !== "message" || Boolean(r.message_id)) && (r.action !== "activity" || !r.message_id));
 const deviceSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("receive"), instance_id: id, conversations, assistants, wait: z.boolean().optional() }).strict(),
+  z.object({ action: z.literal("receive"), instance_id: id, conversations, assistants, wait: z.boolean().optional(), workspace_cleanup: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("ack"), instance_id: id, conversations, assistants, id, rejected: z.boolean().optional() }).strict(),
   z.object({ action: z.literal("result"), instance_id: id, conversations, assistants, id, status: z.enum(["completed", "stopped", "failed", "attention"]), result: z.string().max(1_000_000).nullable().optional(), error: z.string().max(1000).nullable().optional() }).strict(),
 ]);
@@ -64,7 +65,7 @@ function wait(ms: number, signal: AbortSignal) {
 }
 
 /** Shared HTTP handlers used by Next routes and the isolated integration tests. */
-export function helperHandlers({ rpc, requireUser, waitMs = 15_000 }: Dependencies) {
+export function helperHandlers({ rpc, requireUser, listRemovedThreads, waitMs = 15_000 }: Dependencies) {
   async function call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     const { data, error } = await rpc(name, args);
     if (error) {
@@ -117,7 +118,19 @@ export function helperHandlers({ rpc, requireUser, waitMs = 15_000 }: Dependenci
       const until = Date.now() + (action === "receive" && args.wait !== false ? waitMs : 0);
       for (;;) {
         const result = await call("helper_device", params);
-        if (action !== "receive" || (result.requests as unknown[]).length || Date.now() >= until || request.signal.aborted) return json(result);
+        if (args.action === "receive" && args.workspace_cleanup === true) {
+          // Authenticate through the existing RPC first; the request never supplies an owner.
+          // Old helpers reject unknown response keys, so receipts are capability-negotiated.
+          const owner = id.safeParse(result.owner_id);
+          if (!owner.success || !listRemovedThreads) throw new HttpError(503, "Workspace removal status is temporarily unavailable");
+          const reported = [...new Set((args.conversations ?? []).map((conversation) => conversation.thread_id))];
+          try {
+            const removed = reported.length ? await listRemovedThreads(owner.data, reported) : [];
+            // Only explicit removal receipts can authorize cleanup, never a missing thread.
+            result.removed_thread_ids = [...new Set(removed.filter((threadId) => reported.includes(threadId)))];
+          } catch { throw new HttpError(503, "Workspace removal status is temporarily unavailable"); }
+        }
+        if (action !== "receive" || (result.requests as unknown[]).length || (result.removed_thread_ids as string[] | undefined)?.length || Date.now() >= until || request.signal.aborted) return json(result);
         await wait(Math.min(750, until - Date.now()), request.signal);
       }
     }),
