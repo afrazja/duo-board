@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { database } from "./fixtures/helper-database.mjs";
@@ -10,6 +10,7 @@ import { createServer } from "node:http";
 import { StateStore, prepareDirectory, keyFor } from "../bridge/storage.mjs";
 import { BackgroundWorker } from "../bridge/worker.mjs";
 import { RemoteConnection } from "../bridge/remote.mjs";
+import { Backend } from "./fixtures/worker-backend.mjs";
 
 
 const hash = (s) => createHash("sha256").update(s).digest("hex");
@@ -159,6 +160,30 @@ test("a sleeping helper still receives authenticated activity and Wake without m
   await until(()=>store.snapshot().conversations[key].mode==="ready");
   assert.equal(store.snapshot().conversations[key].lastActivityAt,now);
   assert.equal(modelCalls,0);
+});
+
+test("a new board conversation gets its own workspace and Codex task automatically",async(t)=>{
+  const f=await database(t);
+  const directory=await prepareDirectory(await mkdtemp(path.join(tmpdir(),"duo-auto-task-")));
+  const workspaceRoot=path.join(directory,"workspaces");await mkdir(workspaceRoot);
+  const store=await new StateStore(directory).load();await store.change((s)=>{s.workspaceRoot=workspaceRoot;});
+  const backend=new Backend();
+  const worker=new BackgroundWorker(store,{dispatchAllowed:false,clientFactory:()=>backend.client()});
+  await worker.start();t.after(()=>worker.close());
+  const remote=new RemoteConnection(worker,f.connections[0],{retryMs:15,idleMs:10,fetchImpl:(url,options)=>f.handlers.device(new Request(url,options))});
+  await remote.start();t.after(()=>remote.close());
+  await until(()=>store.snapshot().remote.status==="connected");
+  const conversationId=randomUUID();
+  await f.pg.query("insert into threads(id,title,owner_id) values($1,'Automatically linked',$2)",[conversationId,f.owners[0]]);
+  await until(()=>Boolean(store.snapshot().conversations[keyFor(f.owners[0],conversationId)]?.threadId));
+  const linked=store.snapshot().conversations[keyFor(f.owners[0],conversationId)];
+  assert.equal(linked.cwd,await realpath(path.join(workspaceRoot,conversationId)));
+  assert.equal(backend.created,1);
+  assert.equal(backend.starts.length,0);
+  await until(async()=>{
+    const row=(await f.pg.query("select conversation_report from helper_devices where owner_id=$1",[f.owners[0]])).rows[0];
+    return row.conversation_report.some((entry)=>entry.thread_id===conversationId&&entry.task_id===linked.threadId);
+  });
 });
 
 test("website-to-helper transport retains delivery across disconnection and ack loss",async(t)=>{

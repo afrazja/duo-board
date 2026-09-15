@@ -6,7 +6,7 @@ export interface HelperRequest {
 }
 export interface HelperView {
   configured: boolean; connected: boolean;
-  conversation: { thread_id: string; mode: HelperMode; working_on: string | null; queued: number } | null;
+  conversation: { thread_id: string; task_id?: string | null; mode: HelperMode; working_on: string | null; queued: number } | null;
   requests: HelperRequest[];
 }
 

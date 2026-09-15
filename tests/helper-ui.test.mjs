@@ -130,6 +130,7 @@ test("a downloaded connection imports only into a locally chosen workspace and k
   await writeFile(file,JSON.stringify({connection,conversationId}));
   await importConnection({file,workspace:directory,directory:state});
   const saved=await new StateStore(state).load();assert.equal(saved.state.conversations[keyFor(ownerId,conversationId)].cwd,directory);
+  assert.equal(saved.state.workspaceRoot,path.dirname(directory));
   assert.equal(JSON.stringify(saved.state).includes(connection.token),false);
   assert.equal(JSON.parse(await readFile(path.join(state,"connection.json"),"utf8")).token,connection.token);
   const another=randomUUID();await importConnection({conversationId:another,workspace:directory,directory:state});

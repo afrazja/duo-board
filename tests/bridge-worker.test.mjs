@@ -251,6 +251,16 @@ test("different owners with the same board conversation ID get separate task his
   assert.notEqual(backend.starts[0].threadId, backend.starts[1].threadId);
 });
 
+test("task provisioning creates one saved Codex task without starting a model turn", async (t) => {
+  const { worker, store, backend, route } = await setup(t);
+  const first = await worker.ensureTask(route.ownerId, route.conversationId);
+  const second = await worker.ensureTask(route.ownerId, route.conversationId);
+  assert.equal(first, second);
+  assert.equal(store.snapshot().conversations[keyFor(route.ownerId, route.conversationId)].threadId, first);
+  assert.equal(backend.created, 1);
+  assert.equal(backend.starts.length, 0);
+});
+
 test("a temporary connection failure reconnects and runs queued work only once", async (t) => {
   const { worker, store, backend, command } = await setup(t);
   backend.failConnections = 1;

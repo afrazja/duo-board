@@ -56,7 +56,8 @@ export function HelperControls({ helper, paused }: { helper:ReturnType<typeof us
     <span role="status" className="text-zinc-400">{paused?"Conversation paused":waiting?"Wake queued":helperLabel(view,error)}</span>
     {canWake && <button type="button" onClick={()=>void helper.wake()} disabled={waking||waiting} className="min-h-9 rounded-lg border border-emerald-500/50 px-3 text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-50">{waking?"Waking…":"Wake ChatGPT"}</button>}
     {view && !view.configured && !error && <span className="text-zinc-500">Connect in Account → Settings</span>}
-    {view?.connected && !view.conversation && <span className="text-zinc-500">Link this conversation on your computer.</span>}
+    {view?.connected && !view.conversation && <span className="text-zinc-500">Preparing this conversation&apos;s Codex task.</span>}
+    {view?.conversation?.task_id && <span className="text-zinc-500" title={view.conversation.task_id}>Own Codex task · {view.conversation.task_id.slice(0,8)}</span>}
     {error && <p role="alert" className="w-full text-center text-rose-300">{error}</p>}
   </div>;
 }
@@ -106,7 +107,7 @@ export function HelperSettings({ threadId }: { threadId?:string|null }) {
   }
   return <section className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5 p-3" aria-label="Background helper setup">
     <h3 className="text-sm font-medium text-emerald-200">ChatGPT background helper</h3>
-    <p className="my-2 text-xs leading-5 text-zinc-400">Replies run on your computer and sleep after five idle minutes. Automatic startup keeps Wake and Stop available while you are signed in to Windows.</p>
+    <p className="my-2 text-xs leading-5 text-zinc-400">Replies run on your computer and sleep after five idle minutes. Every Duo conversation gets its own Codex task automatically, with separate history. Automatic startup keeps Wake and Stop available while you are signed in to Windows.</p>
     <div className="flex flex-wrap gap-2">
       <button type="button" disabled={busy||!threadId} onClick={()=>void connect()} className="min-h-9 rounded-lg bg-emerald-700 px-3 text-xs font-medium text-white disabled:opacity-50">{busy?"Preparing…":"Connect helper"}</button>
     </div>

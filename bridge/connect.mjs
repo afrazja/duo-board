@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { remoteConfigSchema, RemoteConnection } from "./remote.mjs";
-import { acquireWorkerLock, atomicJson, prepareDirectory, StateStore } from "./storage.mjs";
+import { acquireWorkerLock, atomicJson, keyFor, prepareDirectory, StateStore } from "./storage.mjs";
 import { BackgroundWorker } from "./worker.mjs";
 import { startService } from "./service.mjs";
 
@@ -31,6 +31,12 @@ export async function importConnectionBundle({ bundle: input, workspace, directo
     const previous = store.state.remote;
     if (previous && (previous.ownerId!==bundle.connection.ownerId || previous.deviceId!==bundle.connection.deviceId || previous.origin!==connection.origin)) throw new Error("This helper belongs to another account or website. Use a separate state directory.");
     await worker.handle({ id:randomUUID(),type:"link",ownerId:bundle.connection.ownerId,conversationId:bundle.conversationId,cwd:workspace });
+    const linked=store.state.conversations[keyFor(bundle.connection.ownerId,bundle.conversationId)];
+    const workspaceRoot=path.dirname(linked.cwd);
+    await store.change((s)=>{
+      if(s.workspaceRoot&&path.resolve(s.workspaceRoot)!==workspaceRoot) throw new Error("New conversations already use a different local workspace folder.");
+      s.workspaceRoot=workspaceRoot;
+    });
     await atomicJson(path.join(root,"connection.json"),bundle.connection);
     return {directory:root,remoteConfig:bundle.connection};
   } finally {await release();}

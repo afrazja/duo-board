@@ -216,6 +216,12 @@ export class BackgroundWorker extends EventEmitter {
     return c.threadId;
   }
 
+  async ensureTask(ownerId, conversationId) {
+    const ckey = keyFor(ownerId.toLowerCase(), conversationId.toLowerCase());
+    if (!this.store.snapshot().conversations[ckey]) throw new Error("Link this conversation locally before creating its Codex task");
+    return this.task(await this.connect(), ckey);
+  }
+
   async run(runtime) {
     const key = runtime.jobKey;
     let client;

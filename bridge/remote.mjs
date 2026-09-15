@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, realpath } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import { keyFor } from "./storage.mjs";
 
@@ -72,20 +74,30 @@ export class RemoteConnection {
     const s = this.worker.store.state;
     return Object.entries(s.conversations).filter(([,c]) => c.ownerId === this.config.ownerId).slice(0,200).map(([key,c]) => {
       const jobs = Object.values(s.jobs).filter((j) => j.conversationKey === key);
-      return { thread_id: c.conversationId, mode: c.mode, working_on: jobs.find((j) => ["starting","running","recovering"].includes(j.status))?.requestId ?? null, queued: jobs.filter((j) => j.status === "queued").length };
+      return { thread_id: c.conversationId, task_id: c.threadId, mode: c.mode, working_on: jobs.find((j) => ["starting","running","recovering"].includes(j.status))?.requestId ?? null, queued: jobs.filter((j) => j.status === "queued").length };
     });
+  }
+  async linkConversation(event) {
+    const root = this.worker.store.snapshot().workspaceRoot;
+    if (typeof root !== "string" || !path.isAbsolute(root)) throw new Error("Reconnect the helper once so it can prepare workspaces for new conversations");
+    await mkdir(root, { recursive: true });
+    const trustedRoot = await realpath(root);
+    const candidate = path.join(trustedRoot, event.thread_id);
+    await mkdir(candidate, { recursive: true });
+    const workspace = await realpath(candidate);
+    if (path.relative(trustedRoot, workspace).toLowerCase() !== event.thread_id.toLowerCase()) throw new Error("The new conversation workspace is outside the helper folder");
+    const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
+    await this.worker.handle({ id: commandId(event.id, "link"), type: "link", cwd: workspace, ...route });
+    await this.worker.ensureTask(route.ownerId, route.conversationId);
   }
   async apply(event, serverNow) {
     const ckey = keyFor(this.config.ownerId, event.thread_id);
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
-    if (!this.worker.store.snapshot().conversations[ckey]) {
-      await this.request("ack", { id: event.id, rejected: true });
-      return;
-    }
     let local;
     const waitingFor = event.action === "stop" ? Object.entries(this.worker.store.snapshot().jobs)
       .filter(([, job]) => job.conversationKey === ckey && (!event.message_id || job.requestId === event.message_id) && !terminal.has(job.status)).map(([key]) => key) : [];
     try {
+      if (!this.worker.store.snapshot().conversations[ckey]) await this.linkConversation(event);
       if (event.action === "activity") await this.worker.handle({ id: commandId(event.id, "activity"), type: "activity", ...route }, { activityAgeMs: Math.max(0, Date.parse(serverNow) - Date.parse(event.created_at)) });
       if (event.action === "stop") await this.worker.handle({ id: commandId(event.id, "stop"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id} : {}), ...route });
       if (event.action === "pause") await this.worker.handle({ id: commandId(event.id, "pause"), type: "hold", ...route });

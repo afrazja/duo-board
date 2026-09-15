@@ -56,6 +56,7 @@ export class StateStore {
     }
     const s = this.state;
     if (!s || s.version !== 1 || [s.conversations, s.jobs, s.commands].some((value) => !value || typeof value !== "object" || Array.isArray(value))) throw new Error("Unsupported helper state; refusing to reset saved task links.");
+    if (s.workspaceRoot !== undefined && (typeof s.workspaceRoot !== "string" || !path.isAbsolute(s.workspaceRoot))) throw new Error("Invalid helper workspace root; refusing to create conversation folders.");
     for (const [key, c] of Object.entries(s.conversations)) {
       if (!isId(c.ownerId) || !isId(c.conversationId) || key !== keyFor(c.ownerId, c.conversationId) || !path.isAbsolute(c.cwd) || (c.threadId !== null && !isId(c.threadId)) || !["ready", "paused", "attention", "sleeping"].includes(c.mode) || (c.lastActivityAt !== undefined && (!Number.isFinite(c.lastActivityAt) || c.lastActivityAt < 0)) || (c.sleepingAt != null && (!Number.isFinite(c.sleepingAt) || c.sleepingAt < 0))) throw new Error("Invalid saved conversation link; recovery is required.");
     }

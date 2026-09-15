@@ -8,7 +8,7 @@ type Dependencies = {
   waitMs?: number;
 };
 const id = z.string().uuid();
-const conversations = z.array(z.object({ thread_id: id, mode: z.enum(["ready","sleeping","paused","attention"]), working_on: id.nullable(), queued: z.number().int().min(0).max(100000) }).strict()).max(200).optional();
+const conversations = z.array(z.object({ thread_id: id, task_id: id.nullable().optional(), mode: z.enum(["ready","sleeping","paused","attention"]), working_on: id.nullable(), queued: z.number().int().min(0).max(100000) }).strict()).max(200).optional();
 const requestSchema = z.object({ id, thread_id: id, action: z.enum(["wake", "message", "stop", "activity"]), message_id: id.optional() }).strict()
   .refine((r) => (r.action !== "message" || Boolean(r.message_id)) && (r.action !== "activity" || !r.message_id));
 const deviceSchema = z.discriminatedUnion("action", [
