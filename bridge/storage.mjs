@@ -73,6 +73,7 @@ export class StateStore {
       if (!validText(c.title, 200)) throw new Error("Invalid saved conversation link; recovery is required.");
       if (c.removedAt !== undefined && (typeof c.removedAt !== "string" || !Number.isFinite(Date.parse(c.removedAt)))) throw new Error("Invalid saved removal receipt; recovery is required.");
       if (c.workspaceCleanup !== undefined && (!c.removedAt || !c.workspaceCleanup || !["pending", "blocked", "complete"].includes(c.workspaceCleanup.status) || (c.workspaceCleanup.nextAttemptAt !== undefined && (!Number.isFinite(c.workspaceCleanup.nextAttemptAt) || c.workspaceCleanup.nextAttemptAt < 0)))) throw new Error("Invalid saved workspace cleanup state; recovery is required.");
+      if (c.claudeSessionCleanup !== undefined && (!c.removedAt || !c.claudeSessionCleanup || !["pending", "blocked", "complete"].includes(c.claudeSessionCleanup.status) || (c.claudeSessionCleanup.nextAttemptAt !== undefined && (!Number.isFinite(c.claudeSessionCleanup.nextAttemptAt) || c.claudeSessionCleanup.nextAttemptAt < 0)))) throw new Error("Invalid saved Claude session cleanup state; recovery is required.");
       if (c.attention !== undefined && (!c.attention || typeof c.attention !== "object" || Array.isArray(c.attention) || Object.entries(c.attention).some(([name, reason]) => !isAssistant(name) || !validText(reason, 2000)))) throw new Error("Invalid saved conversation link; recovery is required.");
       c.claudeSessionId ??= null;
       c.claudeSessionStarted ??= false;

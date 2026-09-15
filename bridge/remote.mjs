@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import { ASSISTANTS, keyFor } from "./storage.mjs";
 import { removeConversationWorkspace } from "./workspace-cleanup.mjs";
+import { removeClaudeSession } from "./claude-session-cleanup.mjs";
 
 const uuid = z.string().uuid();
 const assistant = z.enum(ASSISTANTS);
@@ -76,7 +77,9 @@ export class RemoteConnection {
   /** Safe status per conversation: IDs and modes only; no paths, prompts or answers. */
   report() {
     const s = this.worker.store.state;
-    return Object.entries(s.conversations).filter(([,c]) => c.ownerId === this.config.ownerId && c.workspaceCleanup?.status !== "complete" && (!c.removedAt || (c.workspaceCleanup?.nextAttemptAt ?? 0) <= Date.now())).slice(0,200).map(([key,c]) => {
+    // A removed conversation stays reported until both its folder and its Claude session are gone, with backoff while either is blocked.
+    const due = (c) => [c.workspaceCleanup, c.claudeSessionCleanup].filter((step) => step && step.status !== "complete").every((step) => (step.nextAttemptAt ?? 0) <= Date.now());
+    return Object.entries(s.conversations).filter(([,c]) => c.ownerId === this.config.ownerId && !this.cleanupComplete(c) && (!c.removedAt || due(c))).slice(0,200).map(([key,c]) => {
       const jobs = Object.values(s.jobs).filter((j) => j.conversationKey === key);
       const lane = (name) => ({ working_on: jobs.find((j) => j.assistant === name && ["starting","running","recovering"].includes(j.status))?.requestId ?? null, queued: jobs.filter((j) => j.assistant === name && j.status === "queued").length });
       const chatgpt = lane("chatgpt"), claude = lane("claude");
@@ -163,32 +166,59 @@ export class RemoteConnection {
     }
     await this.worker.store.change((s) => { if (s.remote.events[id]) s.remote.events[id].reported = true; });
   }
+  /** A started Claude session is deleted with its conversation; an unstarted one has no transcript to delete. */
+  claudeCleanupNeeded(c) { return this.worker.managed.includes("claude") && Boolean(c.claudeSessionId) && c.claudeSessionStarted === true; }
+  cleanupComplete(c) { return c.workspaceCleanup?.status === "complete" && (!this.claudeCleanupNeeded(c) || c.claudeSessionCleanup?.status === "complete"); }
+  async claudeProjectsDirectory() {
+    if (this.projectsDirectory) return this.projectsDirectory;
+    const client = this.worker.factories.claude();
+    try { this.projectsDirectory = await client.projectsDirectory(); } finally { await client.close(); }
+    return this.projectsDirectory;
+  }
   /** Missing requests alone never authorize filesystem cleanup; only removal receipts do. */
   async cleanupRemoved(threadIds) {
     for (const threadId of new Set(threadIds)) {
       const ckey = keyFor(this.config.ownerId, threadId);
       const c = this.worker.store.state.conversations[ckey];
-      if (!c || c.ownerId !== this.config.ownerId || c.workspaceCleanup?.status === "complete") continue;
+      if (!c || c.ownerId !== this.config.ownerId || this.cleanupComplete(c)) continue;
       await this.worker.store.change((s) => {
         const entry = s.conversations[ckey];
         entry.removedAt ??= new Date().toISOString();
-        entry.workspaceCleanup = { status: "pending", nextAttemptAt: Date.now() + 1000, error: null };
+        if (entry.workspaceCleanup?.status !== "complete") entry.workspaceCleanup = { status: "pending", nextAttemptAt: Date.now() + 1000, error: null };
+        if (this.claudeCleanupNeeded(entry) && entry.claudeSessionCleanup?.status !== "complete") entry.claudeSessionCleanup = { status: "pending", nextAttemptAt: Date.now() + 1000, error: null };
       });
       await this.worker.handle({ id: commandId(threadId, "workspace-removal"), type: "stop", ownerId: this.config.ownerId, conversationId: threadId });
       // Allow active turns to finish stopping while the remote connection keeps
       // serving other conversations. Retry on the next authenticated receipt.
       if ([...this.worker.active.values()].some((run) => run.conversationKey === ckey)) continue;
-      try {
-        const state = this.worker.store.snapshot();
-        await removeConversationWorkspace({ workspaceRoot: state.workspaceRoot, conversation: state.conversations[ckey], conversations: state.conversations });
-        await this.worker.store.change((s) => {
-          s.conversations[ckey].workspaceCleanup = { status: "complete", completedAt: new Date().toISOString(), error: null };
-          for (const event of Object.values(s.remote.events)) if (event.threadId === threadId) event.reported = true;
-        });
-      } catch {
-        await this.worker.store.change((s) => {
-          s.conversations[ckey].workspaceCleanup = { status: "blocked", nextAttemptAt: Date.now() + 30_000, error: "The removed conversation's workspace could not be safely deleted. Cleanup will retry." };
-        });
+      if (this.worker.store.state.conversations[ckey].workspaceCleanup?.status !== "complete") {
+        try {
+          const state = this.worker.store.snapshot();
+          await removeConversationWorkspace({ workspaceRoot: state.workspaceRoot, conversation: state.conversations[ckey], conversations: state.conversations });
+          await this.worker.store.change((s) => {
+            s.conversations[ckey].workspaceCleanup = { status: "complete", completedAt: new Date().toISOString(), error: null };
+            for (const event of Object.values(s.remote.events)) if (event.threadId === threadId) event.reported = true;
+          });
+        } catch {
+          await this.worker.store.change((s) => {
+            s.conversations[ckey].workspaceCleanup = { status: "blocked", nextAttemptAt: Date.now() + 30_000, error: "The removed conversation's workspace could not be safely deleted. Cleanup will retry." };
+          });
+        }
+      }
+      // The conversation's Claude Code session goes with its folder. Claude Code has no
+      // command for deleting a foreground session, so its transcript is removed from the
+      // projects directory the CLI reports, by this session's UUID only.
+      const entry = this.worker.store.state.conversations[ckey];
+      if (this.claudeCleanupNeeded(entry) && entry.claudeSessionCleanup?.status !== "complete") {
+        try {
+          const projectsDirectory = await this.claudeProjectsDirectory();
+          await removeClaudeSession({ projectsDirectory, conversation: this.worker.store.snapshot().conversations[ckey] });
+          await this.worker.store.change((s) => { s.conversations[ckey].claudeSessionCleanup = { status: "complete", completedAt: new Date().toISOString(), error: null }; });
+        } catch {
+          await this.worker.store.change((s) => {
+            s.conversations[ckey].claudeSessionCleanup = { status: "blocked", nextAttemptAt: Date.now() + 30_000, error: "The removed conversation's Claude session could not be safely deleted. Cleanup will retry." };
+          });
+        }
       }
     }
   }

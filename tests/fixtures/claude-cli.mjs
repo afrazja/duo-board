@@ -15,7 +15,7 @@ const log = (entry) => appendFileSync(path.join(home, "calls.log"), JSON.stringi
 if (args[0] === "auth") {
   log({ command: "auth status" });
   if (process.env.DUO_FAKE_CLAUDE_LOGGED_OUT) { process.stdout.write(JSON.stringify({ loggedIn: false }) + "\n"); process.exit(0); }
-  process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "fixture@example.invalid" }) + "\n");
+  process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", email: "fixture@example.invalid", projectsDirectory: path.join(home, "projects") }) + "\n");
   process.exit(0);
 }
 
@@ -39,7 +39,9 @@ process.stdin.on("end", () => {
   if (resume && !existsSync(file)) { process.stdout.write(`No conversation found with session ID: ${sessionId}\n`); process.exit(1); }
   if (!resume && existsSync(file)) { process.stderr.write(`Error: Session ID ${sessionId} is already in use.\n`); process.exit(1); }
   const session = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { turns: [], name: null };
-  const persist = () => { session.name = flags["--name"] ?? session.name; writeFileSync(file, JSON.stringify(session)); };
+  // Mirror Claude Code's on-disk layout too: <projects>/<cwd with non-alphanumerics as "-">/<session>.jsonl.
+  const transcriptDirectory = path.join(home, "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"));
+  const persist = () => { session.name = flags["--name"] ?? session.name; writeFileSync(file, JSON.stringify(session)); mkdirSync(transcriptDirectory, { recursive: true }); writeFileSync(path.join(transcriptDirectory, `${sessionId}.jsonl`), session.turns.map((turn) => JSON.stringify(turn)).join("\n") + "\n"); };
   process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, cwd: process.cwd(), tools: (flags["--tools"] ?? "").split(",").filter(Boolean), mcp_servers: [] }) + "\n");
   const request = prompt.match(/<user_request>\n([\s\S]*?)\n<\/user_request>/)?.[1] ?? prompt.trim();
   if (request.includes("unpersisted-hold")) { setInterval(() => {}, 1000); return; }

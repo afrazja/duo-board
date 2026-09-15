@@ -39,6 +39,15 @@ used; Claude Code's headless mode is the documented way to do both:
 - The helper reports which assistants it runs on every board call. The board
   creates Claude requests, routes Claude's legacy reads to `helper_managed`, and
   blocks legacy Claude posts only while the paired helper reports Claude.
+- When a conversation is removed on the board, its Claude session goes with its
+  workspace folder. Claude Code has no command for deleting a foreground
+  session, so the helper removes the transcript named by that session's UUID
+  (and a same-named folder, if any) from the projects directory that
+  `claude auth status --json` reports, inside the project folder derived from
+  the conversation's workspace. Other sessions and projects are never touched;
+  a session that never started has nothing to delete. The removal is recorded
+  in `state.json` as `claudeSessionCleanup`, retried with backoff when blocked,
+  and only ever triggered by the board's explicit removal receipt.
 
 Local commands accept `assistant` on `enqueue` and `cancel` (`chatgpt` when
 omitted), and `link` accepts `claudeSessionId` for an existing released session

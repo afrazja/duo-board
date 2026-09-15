@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
@@ -141,8 +142,21 @@ export class ClaudeClient extends EventEmitter {
     let status = null;
     try { status = JSON.parse(stdout.slice(stdout.indexOf("{"))); } catch {}
     if (!status || typeof status !== "object") throw new Error(`Claude Code did not report its sign-in status (${code}): ${stderr.trim().slice(0, 200)}`);
+    if (typeof status.projectsDirectory === "string" && path.isAbsolute(status.projectsDirectory)) this.projects = status.projectsDirectory;
     if (status.loggedIn !== true) throw Object.assign(new Error("Sign in to Claude Code (claude auth login) under the Windows account running the helper"), { permanent: true });
     return { loggedIn: true, authMethod: status.authMethod ?? null };
+  }
+
+  /** Where Claude Code keeps session transcripts, as reported by `claude auth status`; the documented default otherwise. */
+  async projectsDirectory() {
+    if (this.projects) return this.projects;
+    const { error, stdout } = await this.exec(["auth", "status", "--json"]);
+    if (error) throw Object.assign(new Error(`Claude Code could not start: ${error.message}`), { permanent: ["ENOENT", "EACCES", "EPERM"].includes(error.code) });
+    let status = null;
+    try { status = JSON.parse(stdout.slice(stdout.indexOf("{"))); } catch {}
+    const reported = status && typeof status.projectsDirectory === "string" && path.isAbsolute(status.projectsDirectory) ? status.projectsDirectory : null;
+    this.projects = reported ?? path.join(this.env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"), "projects");
+    return this.projects;
   }
 
   start(options) {
