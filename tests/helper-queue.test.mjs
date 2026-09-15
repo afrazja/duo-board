@@ -180,6 +180,12 @@ test("a new board conversation gets its own workspace and Codex task automatical
   assert.equal(linked.cwd,await realpath(path.join(workspaceRoot,conversationId)));
   assert.equal(backend.created,1);
   assert.equal(backend.starts.length,0);
+  assert.deepEqual(backend.names.at(-1),{threadId:linked.threadId,name:"Duo Board — Automatically linked"});
+  await f.pg.query("update threads set title='Renamed on the board' where id=$1",[conversationId]);
+  assert.equal((await f.enqueue("activity",{thread_id:conversationId})).status,202);
+  await until(()=>backend.names.at(-1)?.name==="Duo Board — Renamed on the board");
+  assert.equal(backend.names.at(-1).threadId,linked.threadId);
+  assert.equal(backend.created,1);
   await until(async()=>{
     const row=(await f.pg.query("select conversation_report from helper_devices where owner_id=$1",[f.owners[0]])).rows[0];
     return row.conversation_report.some((entry)=>entry.thread_id===conversationId&&entry.task_id===linked.threadId);

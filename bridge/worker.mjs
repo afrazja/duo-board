@@ -105,7 +105,7 @@ export class BackgroundWorker extends EventEmitter {
       if (normalized.type === "link") {
         if (c) {
           if (c.cwd !== normalized.cwd || (normalized.threadId !== null && c.threadId !== normalized.threadId) || (normalized.claudeSessionId !== null && c.claudeSessionId !== normalized.claudeSessionId)) throw new Error("This conversation is already linked. Its task, session and workspace cannot be silently replaced.");
-          if (normalized.title && !c.title) c.title = normalized.title;
+          if (normalized.title !== null) c.title = normalized.title;
         } else {
           if (normalized.threadId && Object.values(s.conversations).some((entry) => entry.threadId === normalized.threadId)) throw new Error("This Codex task is already linked to another conversation");
           if (normalized.claudeSessionId && Object.values(s.conversations).some((entry) => entry.claudeSessionId === normalized.claudeSessionId)) throw new Error("This Claude session is already linked to another conversation");
@@ -257,6 +257,9 @@ export class BackgroundWorker extends EventEmitter {
       if (resumed.thread.id !== c.threadId) throw Object.assign(new Error("Codex resumed a different task"), { permanent: true });
       this.loaded.add(c.threadId);
     }
+    // Keep the visible Codex sidebar title aligned with Duo Board. Naming is
+    // helpful metadata, so a transient naming failure must not block answers.
+    await client.call("thread/name/set", { threadId: c.threadId, name: sessionName(c.title, c.conversationId) }).catch(() => {});
     return c.threadId;
   }
 

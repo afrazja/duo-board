@@ -43,6 +43,18 @@ test("idle helper launches no Codex process or model request", async (t) => {
   assert.equal(backend.starts.length, 0);
 });
 
+test("Codex tasks use the Duo Board title and follow later conversation renames", async (t) => {
+  const { worker, backend, command, route, directory } = await setup(t);
+  await worker.handle(command("link", { cwd: directory, title: "First name" }));
+  const taskId = await worker.ensureTask(route.ownerId, route.conversationId);
+  assert.deepEqual(backend.names.at(-1), { threadId: taskId, name: "Duo Board — First name" });
+
+  await worker.handle(command("link", { cwd: directory, title: "Renamed conversation" }));
+  await worker.ensureTask(route.ownerId, route.conversationId);
+  assert.deepEqual(backend.names.at(-1), { threadId: taskId, name: "Duo Board — Renamed conversation" });
+  assert.equal(backend.created, 1);
+});
+
 test("card Stop interrupts only its request and later questions continue in the same task",async(t)=>{
   const {worker,store,backend,command}=await setup(t);
   const requestId=randomUUID();

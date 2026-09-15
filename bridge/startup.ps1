@@ -38,7 +38,9 @@ switch($Action){
     $taskLauncher=Join-Path $PSScriptRoot 'run-background.ps1'
     $taskLaunchArgs='-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$taskLauncher+'" -Node "'+$taskNode+'" -StateDirectory "'+$StateDirectory+'" -Codex "'+$taskCodex+'"'
     if($taskClaude){$taskLaunchArgs+=' -Claude "'+$taskClaude+'"'}
-    $taskAction=New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument $taskLaunchArgs -WorkingDirectory $taskRoot
+    $taskPowerShell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if(-not (Test-Path -LiteralPath $taskPowerShell)){$taskPowerShell=(Get-Command powershell.exe).Source}
+    $taskAction=New-ScheduledTaskAction -Execute $taskPowerShell -Argument $taskLaunchArgs -WorkingDirectory $taskRoot
     $taskTrigger=New-ScheduledTaskTrigger -AtLogOn -User $taskWho
     $taskPrincipal=New-ScheduledTaskPrincipal -UserId $taskWho -LogonType Interactive -RunLevel Limited
     $taskSettings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)

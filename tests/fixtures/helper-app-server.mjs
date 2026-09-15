@@ -50,7 +50,7 @@ const server=createServer(async(req,res)=>{
       if(body.mode==="sleep"&&!live){offset+=300001;service.worker.pump();}
       if(body.mode==="offline"){online=false;await f.pg.query("update helper_devices set report_at=now()-interval '1 minute' where owner_id=$1",[owner]);}
       if(body.mode==="online")online=true;
-      return send({thread,other,starts:live?metrics.starts:backend.starts.length,active:service.worker.active.size,jobs:Object.values(service.store.state.jobs).map((j)=>({requestId:j.requestId,status:j.status})),conversations:Object.values(service.store.state.conversations).map((c)=>({id:c.conversationId,mode:c.mode}))});
+      return send({thread,other,starts:live?metrics.starts:backend.starts.length,names:live?[]:backend.names,active:service.worker.active.size,jobs:Object.values(service.store.state.jobs).map((j)=>({requestId:j.requestId,status:j.status})),conversations:Object.values(service.store.state.conversations).map((c)=>({id:c.conversationId,mode:c.mode}))});
     }
     if(pathname==="/api/agent/helper") {
       const output=await f.handlers.device(new Request(url,{method:req.method,headers:req.headers,body:raw}));
@@ -69,9 +69,11 @@ const server=createServer(async(req,res)=>{
     if(pathname==="/api/account")return send({account:{id:owner,email:"preview@example.invalid",display_name:"Preview account",connections:[]}});
     if(pathname==="/api/threads") {
       if(req.method==="PATCH") {
-        const allowed=["paused","brief_audio","blind_first_round"].find((key)=>typeof body[key]==="boolean");
+        const allowed=typeof body.title==="string"&&body.title.trim()?"title":["paused","brief_audio","blind_first_round"].find((key)=>typeof body[key]==="boolean");
         if(!allowed)return send({error:"Invalid fixture update"},400);
-        const rows=(await f.pg.query(`update threads set ${allowed}=$1 where id=$2 and owner_id=$3 returning *`,[body[allowed],body.thread_id,owner])).rows;
+        const value=allowed==="title"?body.title.trim().slice(0,120):body[allowed];
+        const rows=(await f.pg.query(`update threads set ${allowed}=$1 where id=$2 and owner_id=$3 returning *`,[value,body.thread_id,owner])).rows;
+        if(allowed==="title")await f.pg.query("insert into helper_requests(id,owner_id,device_id,thread_id,action,assistant) select gen_random_uuid(),$1,id,$2,'activity','chatgpt' from helper_devices where owner_id=$1 and revoked_at is null",[owner,body.thread_id]);
         return send({thread:rows[0]});
       }
       const rows=(await f.pg.query("select t.*,count(m.id)::int as message_count,max(m.created_at) as last_message_at from threads t left join messages m on m.thread_id=t.id where t.owner_id=$1 group by t.id order by t.created_at,t.id",[owner])).rows;

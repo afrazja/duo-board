@@ -65,7 +65,9 @@ try {
   $launcher=Join-Path $application 'run-background.ps1'
   $arguments='-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$launcher+'" -Node "'+$node+'" -Application "'+$application+'" -StateDirectory "'+$state+'" -Codex "'+$codex+'"'
   if($claude){$arguments+=' -Claude "'+$claude+'"'}
-  $action=New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument $arguments -WorkingDirectory $application
+  $powershell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  if(-not (Test-Path -LiteralPath $powershell)){$powershell=(Get-Command powershell.exe).Source}
+  $action=New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $application
   $trigger=New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
   $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
   $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)

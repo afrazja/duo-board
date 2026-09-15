@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { CodexClient } from "../../bridge/codex-client.mjs";
 export class Backend {
-  constructor() { this.threads = new Map(); this.starts = []; this.clients = 0; this.created = 0; this.maxParallel = 0; this.busy = new Set(); this.failConnections = 0; this.conflict = false; }
+  constructor() { this.threads = new Map(); this.starts = []; this.names = []; this.clients = 0; this.created = 0; this.maxParallel = 0; this.busy = new Set(); this.failConnections = 0; this.conflict = false; }
   client() { this.clients++; return new FakeClient(this); }
 }
 class FakeClient extends EventEmitter {
@@ -29,6 +29,13 @@ class FakeClient extends EventEmitter {
       if (!b.threads.has(params.threadId)) throw new Error("Thread not found");
       this.owned.add(params.threadId);
       return { thread: structuredClone(b.threads.get(params.threadId)) };
+    }
+    if (method === "thread/name/set") {
+      const thread = b.threads.get(params.threadId);
+      if (!thread) throw new Error("Thread not found");
+      thread.name = params.name;
+      b.names.push({ threadId: params.threadId, name: params.name });
+      return {};
     }
     if (method === "thread/read") return { thread: structuredClone(b.threads.get(params.threadId)) };
     if (method === "turn/start") {

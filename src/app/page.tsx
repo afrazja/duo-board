@@ -194,6 +194,10 @@ export default function BoardPage() {
   const [audience, setAudience] = useState<Audience>("both");
   const [newTitle, setNewTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [savingTitle, setSavingTitle] = useState(false);
+  const [renameError, setRenameError] = useState("");
   const [navOpen, setNavOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -449,8 +453,31 @@ export default function BoardPage() {
   function pickThread(id: string) {
     setAnswerModeError("");
     setPauseError("");
+    setRenaming(false);
+    setRenameError("");
     setActiveId(id);
     setNavOpen(false);
+  }
+
+  async function renameConversation(e: FormEvent) {
+    e.preventDefault();
+    const title = renameTitle.trim();
+    if (!activeId || !title || savingTitle) return;
+    const threadId = activeId;
+    if (threads.find((thread) => thread.id === threadId)?.title === title) { setRenaming(false); return; }
+    setSavingTitle(true);
+    setRenameError("");
+    try {
+      const res = await fetch("/api/threads", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: threadId, title }) });
+      const data = await res.json() as { thread?: { id: string; title: string }; error?: string };
+      if (!res.ok || !data.thread?.title) throw new Error(data.error ?? "Could not rename this conversation");
+      setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, title: data.thread!.title } : thread));
+      setRenaming(false);
+    } catch (cause) {
+      if (loaded.current.threadId === threadId) setRenameError((cause as Error).message);
+    } finally {
+      setSavingTitle(false);
+    }
   }
 
   async function changeBriefAudio(brief: boolean) {
@@ -492,6 +519,8 @@ export default function BoardPage() {
     loaded.current = { threadId: null, messages: [] };
     setMessages([]);
     setDraft("");
+    setRenaming(false);
+    setRenameError("");
     setActiveId(null);
     setThreads((current) => current.filter((thread) => thread.id !== id));
     setRemoveTarget(null);
@@ -589,16 +618,22 @@ export default function BoardPage() {
         <header aria-label="This conversation" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-zinc-800 bg-zinc-900/50 px-3 py-3 md:px-5">
           <button type="button" onClick={() => setNavOpen(true)} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-zinc-300 md:hidden" aria-label="Open conversations">☰</button>
           <div className="min-w-24 flex-1">
-            <h1 className="truncate text-[16px] font-semibold">{active?.title ?? "…"}</h1>
+            {renaming && active ? <form onSubmit={renameConversation} className="flex max-w-xl items-center gap-2">
+              <input autoFocus value={renameTitle} onChange={(e) => setRenameTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") { setRenaming(false); setRenameError(""); } }} maxLength={120} aria-label="Conversation name" className="min-h-10 min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-[14px] outline-none focus:border-indigo-500" />
+              <button type="submit" disabled={!renameTitle.trim() || savingTitle} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50">{savingTitle ? "Saving…" : "Save"}</button>
+              <button type="button" disabled={savingTitle} onClick={() => { setRenaming(false); setRenameError(""); }} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Cancel</button>
+            </form> : <h1 className="truncate text-[16px] font-semibold">{active?.title ?? "…"}</h1>}
             <p className="mt-1 text-[12px] text-zinc-400"><span className={active?.paused ? "text-amber-300" : "text-emerald-300"}>{active?.paused ? "Paused" : "Active"}</span> · {active?.blind_first_round === false ? "Live" : "Separate"}{briefAudio ? " · Brief audio" : ""}</p>
           </div>
           <div role="group" aria-label="Conversation controls" className="ml-auto flex items-center gap-2">
+            <button type="button" disabled={!active || renaming} onClick={() => { if (active) { setRenameTitle(active.title); setRenameError(""); setRenaming(true); } }} className="min-h-10 rounded-lg border border-zinc-700 px-3 py-2 text-[13px] font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50">Rename</button>
             <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`min-h-10 rounded-lg border px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-400 bg-amber-400 text-zinc-950 hover:bg-amber-300" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
               {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
             </button>
             <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-10 rounded-lg border border-rose-500/60 px-3 py-2 text-[13px] font-medium text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:opacity-40">Remove</button>
           </div>
           {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
+          {renameError && <p role="alert" className="w-full text-[12px] text-rose-300">{renameError}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
         </header>
 

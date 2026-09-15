@@ -105,7 +105,13 @@ export class RemoteConnection {
       .filter(([, job]) => job.conversationKey === ckey && (!event.message_id || (job.requestId === event.message_id && job.assistant === lane)) && !terminal.has(job.status)).map(([key]) => key) : [];
     try {
       if (!this.worker.store.snapshot().conversations[ckey]) await this.linkConversation(event);
-      else if (event.title && !this.worker.store.snapshot().conversations[ckey].title) await this.worker.handle({ id: commandId(event.id, "title"), type: "link", cwd: this.worker.store.snapshot().conversations[ckey].cwd, title: event.title, ...route }).catch(() => {});
+      else if (event.title && event.title !== this.worker.store.snapshot().conversations[ckey].title) {
+        const previousTitle = this.worker.store.snapshot().conversations[ckey].title;
+        await this.worker.handle({ id: commandId(event.id, "title"), type: "link", cwd: this.worker.store.snapshot().conversations[ckey].cwd, title: event.title, ...route });
+        // The first server title can fill older local state without waking a
+        // model connection. A real rename updates the already-created task.
+        if (previousTitle) await this.worker.ensureSessions(route.ownerId, route.conversationId);
+      }
       if (event.action === "activity") await this.worker.handle({ id: commandId(event.id, "activity"), type: "activity", ...route }, { activityAgeMs: Math.max(0, Date.parse(serverNow) - Date.parse(event.created_at)) });
       if (event.action === "stop") await this.worker.handle({ id: commandId(event.id, "stop"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id, assistant: lane} : {}), ...route });
       if (event.action === "pause") await this.worker.handle({ id: commandId(event.id, "pause"), type: "hold", ...route });

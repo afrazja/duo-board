@@ -191,10 +191,18 @@ export async function createThread(ownerId: string, title: string): Promise<Thre
   return { ...data, message_count: 0, last_message_at: null, blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
-export async function setThreadPreferences(ownerId: string, threadId: string, preferences: { brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
+export async function setThreadPreferences(ownerId: string, threadId: string, preferences: { title?: string; brief_audio?: boolean; blind_first_round?: boolean; paused?: boolean }) {
   const { data, error } = await db().from("threads").update(preferences).eq("id", threadId).eq("owner_id", ownerId).select("*").single();
   if (error) fail(error);
-  return { id: data.id as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
+  if (preferences.title !== undefined) {
+    // A durable activity event wakes the connected helper long enough to apply
+    // the new title to its saved Codex task. Renaming still succeeds when no
+    // helper is connected; the next real event will carry the latest title.
+    try {
+      await db().rpc("helper_user", { p_owner: ownerId, p_action: "enqueue", p_args: { id: crypto.randomUUID(), thread_id: threadId, action: "activity", assistant: "chatgpt" } });
+    } catch { /* Helper setup is optional. */ }
+  }
+  return { id: data.id as string, title: data.title as string, brief_audio: Boolean(data.brief_audio), blind_first_round: data.blind_first_round !== false, paused: data.paused === true };
 }
 
 export async function getThreadPreferences(ownerId: string, threadId: string) {

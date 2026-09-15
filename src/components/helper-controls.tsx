@@ -53,18 +53,26 @@ export function useHelper(threadId: string | null) {
 
 /** One assistant's helper status. Wake is per conversation, so either column can wake both lanes. */
 export function HelperControls({ helper, paused, assistant = "chatgpt" }: { helper:ReturnType<typeof useHelper>; paused:boolean; assistant?:HelperAssistant }) {
+  const [copied, setCopied] = useState("");
+  const [copyError, setCopyError] = useState("");
   const {view,error,waking} = helper;
   const waiting = view?.requests.some((r)=>r.action==="wake"&&r.status==="pending");
   const managed = helperManages(view, assistant);
   const canWake = managed && !paused && (!view?.connected || Boolean(view.conversation && (view.conversation.mode !== "ready" || (assistant==="claude"?view.conversation.claude_attention:view.conversation.chatgpt_attention))));
   const ownId = assistant==="claude" ? view?.conversation?.claude_session_id : view?.conversation?.task_id;
+  async function copyId() {
+    if (!ownId) return;
+    try { await navigator.clipboard.writeText(ownId); setCopied(ownId); setCopyError(""); }
+    catch { setCopyError("Could not copy the ID"); }
+  }
   return <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-3 py-2 text-[12px]" aria-label={`${NAMES[assistant]} helper controls`}>
     <span className={`font-medium ${TONES[assistant]}`}>{NAMES[assistant]}</span>
     <span role="status" className="text-zinc-400">{paused?"Conversation paused":waiting?"Wake queued":helperLabel(view,error,assistant)}</span>
     {canWake && <button type="button" onClick={()=>void helper.wake()} disabled={waking||waiting} className={`min-h-9 rounded-lg border px-3 disabled:opacity-50 ${BUTTONS[assistant]}`}>{waking?"Waking…":`Wake ${NAMES[assistant]}`}</button>}
     {view && !view.configured && !error && <span className="text-zinc-500">Connect in Account → Settings</span>}
     {view?.connected && managed && !view.conversation && <span className="text-zinc-500">Preparing this conversation&apos;s {assistant==="claude"?"Claude session":"Codex task"}.</span>}
-    {managed && ownId && <span className="text-zinc-500" title={ownId}>{assistant==="claude"?"Own Claude session":"Own Codex task"} · {ownId.slice(0,8)}</span>}
+    {managed && ownId && <span className="inline-flex items-center gap-2 text-zinc-500"><span title={ownId}>{assistant==="claude"?"Claude session":"Codex task"} · {ownId.slice(0,8)}</span><button type="button" onClick={()=>void copyId()} className="rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-800" aria-label={`Copy ${assistant==="claude"?"Claude session":"Codex task"} ID`}>{copied===ownId?"Copied":"Copy ID"}</button></span>}
+    {copyError && <p role="alert" className="w-full text-center text-rose-300">{copyError}</p>}
     {error && <p role="alert" className="w-full text-center text-rose-300">{error}</p>}
   </div>;
 }
