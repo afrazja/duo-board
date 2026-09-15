@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -110,6 +110,77 @@ test("board helper integration commits messages, controls and linked answers saf
     const result=await f.device("result",{id:q.id,status:"completed",result:"x".repeat(20001)});
     assert.equal(result.data.status,"attention");assert.equal((await replies(id)).length,0);
   });
+});
+
+test("a helper that runs Claude Code answers for both assistants, one request and one reply each",async(t)=>{
+  const f=await database(t,true);
+  const message=async(body,extra={})=>{const id=randomUUID();await f.pg.query("insert into messages(id,thread_id,author,addressed_to,body) values($1,$2,'user',$3,$4)",[id,f.threads[0],extra.to??"both",body]);return id;};
+  const requests=async(id)=>(await f.pg.query("select * from helper_requests where message_id=$1 order by seq",[id])).rows;
+  const replies=async(id)=>(await f.pg.query("select author,body,helper_reply_for from messages where reply_to=$1 order by author",[id])).rows;
+  await t.test("before the helper reports Claude, a question to both queues ChatGPT only",async()=>{
+    const id=await message("ChatGPT only for now");
+    assert.deepEqual((await requests(id)).map((r)=>r.assistant),["chatgpt"]);
+    assert.equal((await f.enqueue("message",{message_id:id,assistant:"claude"})).status,202); // explicit requests are still allowed for a claude-addressed message
+    assert.equal((await f.enqueue("message",{message_id:id,assistant:"bogus"})).status,400);
+  });
+  await t.test("once Claude is managed, a question to both creates one request per assistant and each result posts as its own author",async()=>{
+    assert.equal((await f.device("receive",{assistants:["chatgpt","other"]})).status,400); // unknown assistants are rejected at the API
+    const report=await f.device("receive",{assistants:["chatgpt","claude"]});assert.equal(report.status,200);
+    assert.deepEqual((await f.pg.query("select managed_assistants from helper_devices where owner_id=$1",[f.owners[0]])).rows[0].managed_assistants,["chatgpt","claude"]);
+    // The database keeps only known names even if a caller bypasses the API schema.
+    await f.pg.query("select public.helper_device($1,$2,'receive',$3)",[createHash("sha256").update(f.connections[0].token).digest("hex"),f.instances[0],JSON.stringify({assistants:["claude","other"]})]);
+    assert.deepEqual((await f.pg.query("select managed_assistants from helper_devices where owner_id=$1",[f.owners[0]])).rows[0].managed_assistants,["claude"]);
+    await f.device("receive",{assistants:["chatgpt","claude"]});
+    assert.deepEqual((await f.http(`/api/helper/requests?thread=${f.threads[0]}`,"GET")).data.managed_assistants,["chatgpt","claude"]);
+    const id=await message("Answer me both");
+    const both=await requests(id);assert.deepEqual(both.map((r)=>r.assistant),["chatgpt","claude"]);
+    assert.ok(both.every((r)=>r.prompt.includes("<user_request>\nAnswer me both")));
+    const delivered=(await f.device("receive")).data.requests.filter((r)=>r.message_id===id);
+    assert.deepEqual(delivered.map((r)=>[r.assistant,r.title]),[["chatgpt","Test"],["claude","Test"]]);
+    for(const r of both)await f.device("ack",{id:r.id});
+    assert.equal((await f.device("result",{id:both[1].id,status:"completed",result:"Claude says hi"})).data.status,"completed");
+    assert.equal((await f.device("result",{id:both[0].id,status:"completed",result:"ChatGPT says hi"})).data.status,"completed");
+    assert.deepEqual(await replies(id),[{author:"chatgpt",body:"ChatGPT says hi",helper_reply_for:id},{author:"claude",body:"Claude says hi",helper_reply_for:id}]);
+    // A repeated Claude result cannot post a second Claude reply beside the first.
+    const again=await f.enqueue("message",{message_id:id,assistant:"claude"});await f.device("ack",{id:again.data.id});
+    await f.device("result",{id:again.data.id,status:"completed",result:"Claude again"});
+    assert.equal((await replies(id)).length,2);
+    const claudeOnly=await message("Just Claude",{to:"claude"});
+    assert.deepEqual((await requests(claudeOnly)).map((r)=>r.assistant),["claude"]);
+  });
+  await t.test("a card Stop for Claude cancels only Claude's request and blocks only Claude's late answer",async()=>{
+    const id=await message("Stop Claude here");
+    const [chatgpt,claude]=await requests(id);await f.device("ack",{id:chatgpt.id});await f.device("ack",{id:claude.id});
+    await f.pg.query("select stop_board_task($1,$2,$3,'claude')",[f.owners[0],f.threads[0],id]);
+    const after=await requests(id);
+    assert.deepEqual(after.map((r)=>[r.assistant,r.action,r.status]),[["chatgpt","message","received"],["claude","message","stop_requested"],["claude","stop","pending"]]);
+    assert.equal((await f.device("result",{id:claude.id,status:"completed",result:"Too late"})).data.status,"stopped");
+    assert.equal((await f.device("result",{id:chatgpt.id,status:"completed",result:"Still fine"})).data.status,"completed");
+    assert.deepEqual((await replies(id)).map((r)=>r.author),["chatgpt"]);
+    assert.equal((await f.http(`/api/helper/requests?thread=${f.threads[0]}`,"GET")).data.requests.find((r)=>r.id===after[2].id).assistant,"claude");
+  });
+  await t.test("the conversation report carries both session IDs and the page reads each lane separately",async()=>{
+    const report={thread_id:f.threads[0],task_id:randomUUID(),claude_session_id:randomUUID(),mode:"ready",working_on:null,queued:0,claude_working_on:randomUUID(),claude_queued:1,chatgpt_attention:true,claude_attention:false};
+    assert.equal((await f.device("receive",{conversations:[report]})).status,200);
+    const view=(await f.http(`/api/helper/requests?thread=${f.threads[0]}`,"GET")).data;
+    assert.equal(view.conversation.claude_session_id,report.claude_session_id);
+    assert.equal(helperLabel(view,"","claude"),"Working");assert.equal(helperLabel(view,"","chatgpt"),"Needs attention");
+    assert.equal((await f.device("receive",{conversations:[{...report,claude_queued:-1}]})).status,400);
+    await f.device("receive",{assistants:["chatgpt"]});
+    assert.equal(helperLabel((await f.http(`/api/helper/requests?thread=${f.threads[0]}`,"GET")).data,"","claude"),"Claude Code not installed on your computer");
+    assert.deepEqual((await requests(await message("No Claude again"))).map((r)=>r.assistant),["chatgpt"]);
+  });
+});
+
+test("request cards separate Claude from ChatGPT for the same question",()=>{
+  const thread=randomUUID(),message=randomUUID();
+  const view={configured:true,connected:true,managed_assistants:["chatgpt","claude"],conversation:{thread_id:thread,mode:"ready",working_on:message,queued:0,claude_working_on:null,claude_queued:1,claude_attention:false},requests:[{id:randomUUID(),action:"message",assistant:"chatgpt",message_id:message,status:"received"},{id:randomUUID(),action:"message",assistant:"claude",message_id:message,status:"received"}]};
+  assert.equal(helperRequestState(view,message,"chatgpt"),"working");assert.equal(helperRequestState(view,message,"claude"),"queued");
+  view.requests.push({id:randomUUID(),action:"stop",assistant:"claude",message_id:message,status:"pending"});
+  assert.equal(helperRequestState(view,message,"claude"),"stopping");assert.equal(helperRequestState(view,message,"chatgpt"),"working");
+  view.conversation.claude_attention=true;view.requests.pop();
+  assert.equal(helperRequestState(view,message,"claude"),"attention");assert.equal(helperRequestState(view,message,"chatgpt"),"working");
+  assert.equal(helperRequestState({...view,managed_assistants:["chatgpt"]},message,"claude"),null);
 });
 
 test("request cards distinguish offline, sleep, working, and unconfirmed Stop",()=>{

@@ -29,19 +29,23 @@ switch($Action){
   'Install' {
     $taskNode=(Get-Command node.exe).Source
     $taskCodex=(Get-Command codex.exe).Source
+    $taskClaude=(Get-Command claude.exe -ErrorAction SilentlyContinue).Source
+    if(-not $taskClaude){$taskCandidate=Join-Path $env:APPDATA 'npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe';if(Test-Path -LiteralPath $taskCandidate){$taskClaude=$taskCandidate}}
     $taskScript=Join-Path $PSScriptRoot 'background.mjs'
-    foreach($taskPath in @($taskNode,$taskCodex,$taskScript,$StateDirectory)){if($taskPath.Contains('"')){throw 'Paths cannot contain quotes.'}}
+    foreach($taskPath in @($taskNode,$taskCodex,$taskClaude,$taskScript,$StateDirectory)){if($taskPath -and $taskPath.Contains('"')){throw 'Paths cannot contain quotes.'}}
     $taskWho=[Security.Principal.WindowsIdentity]::GetCurrent().Name
     # Launch through hidden PowerShell so Windows never creates a console window.
     $taskLauncher=Join-Path $PSScriptRoot 'run-background.ps1'
     $taskLaunchArgs='-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$taskLauncher+'" -Node "'+$taskNode+'" -StateDirectory "'+$StateDirectory+'" -Codex "'+$taskCodex+'"'
+    if($taskClaude){$taskLaunchArgs+=' -Claude "'+$taskClaude+'"'}
     $taskAction=New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument $taskLaunchArgs -WorkingDirectory $taskRoot
     $taskTrigger=New-ScheduledTaskTrigger -AtLogOn -User $taskWho
     $taskPrincipal=New-ScheduledTaskPrincipal -UserId $taskWho -LogonType Interactive -RunLevel Limited
     $taskSettings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $TaskName -Description "Duo Board background helper: $StateDirectory" -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Force|Out-Null
     Start-ScheduledTask -TaskName $TaskName
-    Write-Output 'Automatic startup is installed for this Windows account.'
+    if($taskClaude){Write-Output 'Automatic startup is installed for this Windows account (ChatGPT via Codex, Claude via Claude Code).'}
+    else{Write-Output 'Automatic startup is installed for this Windows account (ChatGPT only; Claude Code was not found).'}
   }
   'Start' {if(-not $taskExisting){throw 'Install automatic startup first.'};Start-ScheduledTask -TaskName $TaskName}
   'Stop' {Stop-Helper;Write-Output 'Helper stopped. Saved conversation links are preserved.'}

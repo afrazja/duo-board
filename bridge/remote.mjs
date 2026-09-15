@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { keyFor } from "./storage.mjs";
+import { ASSISTANTS, keyFor } from "./storage.mjs";
 
 const uuid = z.string().uuid();
+const assistant = z.enum(ASSISTANTS);
 export const remoteConfigSchema = z.object({ url: z.string().url(), ownerId: uuid, deviceId: uuid, token: z.string().regex(/^duo_helper_[A-Za-z0-9_-]{43}$/) }).strict();
 const timestamp = z.iso.datetime({ offset: true });
-const eventSchema = z.object({ id: uuid, seq: z.union([z.number(), z.string()]), thread_id: uuid, action: z.enum(["wake", "message", "stop", "pause", "activity"]), message_id: uuid.nullable(), prompt: z.string().min(1).max(100_000).nullable(), status: z.literal("pending"), created_at: timestamp }).strict()
+// `assistant` and `title` arrive from a board that knows about Claude sessions; an older board omits them.
+const eventSchema = z.object({ id: uuid, seq: z.union([z.number(), z.string()]), thread_id: uuid, action: z.enum(["wake", "message", "stop", "pause", "activity"]), message_id: uuid.nullable(), prompt: z.string().min(1).max(100_000).nullable(), status: z.literal("pending"), created_at: timestamp, assistant: assistant.optional(), title: z.string().max(200).nullable().optional() }).strict()
   .refine((e) => (e.action === "stop" || !e.message_id || Boolean(e.prompt)) && (e.action !== "message" || Boolean(e.message_id)) && (!["pause", "activity"].includes(e.action) || !e.message_id));
 const responseSchema = z.object({ device_id: uuid, owner_id: uuid, requests: z.array(eventSchema).max(50), server_now: timestamp }).strict();
 const ackSchema = z.object({ id: uuid, status: z.enum(["received", "stop_requested", "cancelled", "completed", "stopped", "failed", "attention"]) }).strict();
@@ -19,7 +21,7 @@ function commandId(eventId, part) {
 }
 class RemoteError extends Error { constructor(message, permanent = false) { super(message); this.permanent = permanent; } }
 
-/** Outbound HTTPS only. No remote request can link a task or choose a workspace. */
+/** Outbound HTTPS only. No remote request can link a task, choose a workspace, or pick a session ID. */
 export class RemoteConnection {
   constructor(worker, config, { fetchImpl = fetch, retryMs = 1000, maxRetryMs = 30_000, idleMs = 50, requestTimeoutMs = 22_000 } = {}) {
     this.worker = worker;
@@ -48,7 +50,7 @@ export class RemoteConnection {
       const res = await this.fetchImpl(`${this.origin}/api/agent/helper`, {
         method: "POST", redirect: "error", signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.token}` },
-        body: JSON.stringify({ action, instance_id: this.instanceId, conversations: this.report(), ...payload }),
+        body: JSON.stringify({ action, instance_id: this.instanceId, conversations: this.report(), assistants: this.worker.managed, ...payload }),
       });
       if ([401, 403, 409].includes(res.status)) throw new RemoteError("Helper access was revoked, replaced, or belongs to another instance. Reconnect it from your account.", true);
       if (res.status === 404) throw Object.assign(new RemoteError("This helper request or conversation was removed", action === "receive"), { missing: action !== "receive" });
@@ -70,11 +72,14 @@ export class RemoteConnection {
       throw new RemoteError("Board connection interrupted; saved requests will be retried");
     } finally { clearTimeout(timeout); if (this.activeRequest === controller) this.activeRequest = null; }
   }
+  /** Safe status per conversation: IDs and modes only; no paths, prompts or answers. */
   report() {
     const s = this.worker.store.state;
     return Object.entries(s.conversations).filter(([,c]) => c.ownerId === this.config.ownerId).slice(0,200).map(([key,c]) => {
       const jobs = Object.values(s.jobs).filter((j) => j.conversationKey === key);
-      return { thread_id: c.conversationId, task_id: c.threadId, mode: c.mode, working_on: jobs.find((j) => ["starting","running","recovering"].includes(j.status))?.requestId ?? null, queued: jobs.filter((j) => j.status === "queued").length };
+      const lane = (name) => ({ working_on: jobs.find((j) => j.assistant === name && ["starting","running","recovering"].includes(j.status))?.requestId ?? null, queued: jobs.filter((j) => j.assistant === name && j.status === "queued").length });
+      const chatgpt = lane("chatgpt"), claude = lane("claude");
+      return { thread_id: c.conversationId, task_id: c.threadId, claude_session_id: c.claudeSessionId ?? null, mode: c.mode, working_on: chatgpt.working_on, queued: chatgpt.queued, claude_working_on: claude.working_on, claude_queued: claude.queued, chatgpt_attention: Boolean(c.attention?.chatgpt), claude_attention: Boolean(c.attention?.claude) };
     });
   }
   async linkConversation(event) {
@@ -87,22 +92,25 @@ export class RemoteConnection {
     const workspace = await realpath(candidate);
     if (path.relative(trustedRoot, workspace).toLowerCase() !== event.thread_id.toLowerCase()) throw new Error("The new conversation workspace is outside the helper folder");
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
-    await this.worker.handle({ id: commandId(event.id, "link"), type: "link", cwd: workspace, ...route });
-    await this.worker.ensureTask(route.ownerId, route.conversationId);
+    await this.worker.handle({ id: commandId(event.id, "link"), type: "link", cwd: workspace, ...(event.title ? { title: event.title } : {}), ...route });
+    // One Codex task and one reserved Claude session, both chosen locally; the board only learns their IDs.
+    await this.worker.ensureSessions(route.ownerId, route.conversationId);
   }
   async apply(event, serverNow) {
     const ckey = keyFor(this.config.ownerId, event.thread_id);
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
+    const lane = event.assistant ?? "chatgpt";
     let local;
     const waitingFor = event.action === "stop" ? Object.entries(this.worker.store.snapshot().jobs)
-      .filter(([, job]) => job.conversationKey === ckey && (!event.message_id || job.requestId === event.message_id) && !terminal.has(job.status)).map(([key]) => key) : [];
+      .filter(([, job]) => job.conversationKey === ckey && (!event.message_id || (job.requestId === event.message_id && job.assistant === lane)) && !terminal.has(job.status)).map(([key]) => key) : [];
     try {
       if (!this.worker.store.snapshot().conversations[ckey]) await this.linkConversation(event);
+      else if (event.title && !this.worker.store.snapshot().conversations[ckey].title) await this.worker.handle({ id: commandId(event.id, "title"), type: "link", cwd: this.worker.store.snapshot().conversations[ckey].cwd, title: event.title, ...route }).catch(() => {});
       if (event.action === "activity") await this.worker.handle({ id: commandId(event.id, "activity"), type: "activity", ...route }, { activityAgeMs: Math.max(0, Date.parse(serverNow) - Date.parse(event.created_at)) });
-      if (event.action === "stop") await this.worker.handle({ id: commandId(event.id, "stop"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id} : {}), ...route });
+      if (event.action === "stop") await this.worker.handle({ id: commandId(event.id, "stop"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id, assistant: lane} : {}), ...route });
       if (event.action === "pause") await this.worker.handle({ id: commandId(event.id, "pause"), type: "hold", ...route });
       if (event.action === "wake") await this.worker.handle({ id: commandId(event.id, "resume"), type: "resume", ...route });
-      if (event.message_id && event.action !== "stop") local = await this.worker.handle({ id: commandId(event.id, "enqueue"), type: "enqueue", ...route, requestId: event.message_id, text: event.prompt });
+      if (event.message_id && event.action !== "stop") local = await this.worker.handle({ id: commandId(event.id, "enqueue"), type: "enqueue", ...route, requestId: event.message_id, assistant: lane, text: event.prompt });
     } catch (error) {
       if (["EACCES", "EPERM", "ENOSPC", "EIO", "EROFS"].includes(error.code)) throw error;
       await this.request("ack", { id: event.id, rejected: true });
@@ -114,7 +122,7 @@ export class RemoteConnection {
     // No acknowledgement until BOTH local command and delivery mapping are saved.
     const acknowledged = await this.request("ack", { id: event.id });
     if (["cancelled", "stop_requested"].includes(acknowledged.status)) {
-      await this.worker.handle({ id: commandId(event.id, "cancel"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id} : {}), ...route });
+      await this.worker.handle({ id: commandId(event.id, "cancel"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id, assistant: lane} : {}), ...route });
     }
   }
   async flush() {
@@ -187,3 +195,4 @@ export class RemoteConnection {
     await this.done;
   }
 }
+

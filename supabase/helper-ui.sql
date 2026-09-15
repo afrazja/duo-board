@@ -2,7 +2,10 @@
 -- accounts.sql, task-stops.sql and answer-modes.sql. No live rollout implied.
 begin;
 alter table public.messages add column if not exists helper_reply_for uuid references public.messages(id) on delete cascade;
-create unique index if not exists helper_reply_once on public.messages(thread_id,helper_reply_for) where helper_reply_for is not null;
+-- One helper reply per assistant per question: a question to both gets one
+-- Claude answer and one ChatGPT answer, and neither can be posted twice.
+drop index if exists public.helper_reply_once;
+create unique index if not exists helper_reply_once_by_author on public.messages(thread_id,author,helper_reply_for) where helper_reply_for is not null;
 
 -- Capture explicit reply/compare context once; retries use the saved prompt.
 -- Other participants are labelled as context, never instructions to the helper.
@@ -34,24 +37,30 @@ revoke all on function public.helper_prepare_prompt() from public,anon,authentic
 create or replace trigger helper_request_prompt before insert on public.helper_requests
 for each row execute function public.helper_prepare_prompt();
 
+-- Each managed assistant the message is addressed to gets its own request; a
+-- card Stop cancels only that assistant's pending work for that question.
 create or replace function public.helper_queue_board_message()
 returns trigger language plpgsql security definer set search_path = '' as $$
 declare d public.helper_devices%rowtype;
 declare r public.helper_requests%rowtype;
+declare a text;
 begin
   select h.* into d from public.helper_devices h join public.threads t on t.owner_id=h.owner_id
     where t.id=new.thread_id and not t.archived and h.revoked_at is null;
-  if not found or new.author<>'user' or new.addressed_to not in ('chatgpt','both') then return new; end if;
-  if tg_op='INSERT' and not ('chatgpt'=any(new.stopped_for)) then
-    insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,prompt)
-      values(gen_random_uuid(),d.owner_id,d.id,new.thread_id,'message',new.id,new.body);
-  elsif tg_op='UPDATE' and 'chatgpt'=any(new.stopped_for) and not ('chatgpt'=any(old.stopped_for)) then
-    insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id)
-      values(gen_random_uuid(),d.owner_id,d.id,new.thread_id,'stop',new.id) returning * into r;
-    update public.helper_requests set status=case when received_at is null then 'cancelled' else 'stop_requested' end,result=null
-      where device_id=d.id and thread_id=new.thread_id and message_id=new.id and seq<r.seq
-      and action in ('wake','message') and status in ('pending','received');
-  end if;
+  if not found or new.author<>'user' then return new; end if;
+  foreach a in array array['chatgpt','claude'] loop
+    if new.addressed_to not in (a,'both') or not (a=any(d.managed_assistants)) then continue; end if;
+    if tg_op='INSERT' and not (a=any(new.stopped_for)) then
+      insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,prompt,assistant)
+        values(gen_random_uuid(),d.owner_id,d.id,new.thread_id,'message',new.id,new.body,a);
+    elsif tg_op='UPDATE' and a=any(new.stopped_for) and not (a=any(old.stopped_for)) then
+      insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,assistant)
+        values(gen_random_uuid(),d.owner_id,d.id,new.thread_id,'stop',new.id,a) returning * into r;
+      update public.helper_requests set status=case when received_at is null then 'cancelled' else 'stop_requested' end,result=null
+        where device_id=d.id and thread_id=new.thread_id and message_id=new.id and assistant=a and seq<r.seq
+        and action in ('wake','message') and status in ('pending','received');
+    end if;
+  end loop;
   return new;
 end;
 $$;
@@ -97,6 +106,7 @@ create or replace trigger helper_thread_pause after update of paused on public.t
 for each row execute function public.helper_queue_thread_pause();
 
 -- Result acknowledgement and the linked chat reply commit in one transaction.
+-- The reply is posted as the assistant the request belongs to.
 create or replace function public.helper_publish_answer()
 returns trigger language plpgsql security definer set search_path = '' as $$
 declare m public.messages%rowtype;
@@ -106,7 +116,7 @@ declare paused boolean;
 begin
   if new.status<>'completed' or old.status='completed' or new.message_id is null or new.action not in ('wake','message') then return new; end if;
   select * into m from public.messages where id=new.message_id and thread_id=new.thread_id for share;
-  if not found or 'chatgpt'=any(m.stopped_for) then new.status:='stopped';new.result:=null;return new; end if;
+  if not found or new.assistant=any(m.stopped_for) then new.status:='stopped';new.result:=null;return new; end if;
   select t.paused into paused from public.threads t where t.id=new.thread_id and t.owner_id=new.owner_id for share;
   if paused then raise exception 'HELPER_THREAD_PAUSED'; end if;
   answer := btrim(coalesce(new.result,''),E' \t\r\n');
@@ -117,12 +127,12 @@ begin
   if char_length(answer) not between 1 and 20000 or char_length(summary)>1200 then
     new.status:='attention';new.result:=null;new.error:='The answer could not fit in the chat. Review it in the helper.';return new;
   end if;
-  if not exists(select 1 from public.messages where thread_id=new.thread_id and author='chatgpt' and reply_to=m.id) then
+  if not exists(select 1 from public.messages where thread_id=new.thread_id and author=new.assistant and reply_to=m.id) then
     insert into public.messages(thread_id,author,addressed_to,body,spoken_summary,reply_to,kind,helper_reply_for)
-      values(new.thread_id,'chatgpt','none',answer,nullif(btrim(summary),''),m.id,'message',m.id)
-      on conflict(thread_id,helper_reply_for) where helper_reply_for is not null do nothing;
+      values(new.thread_id,new.assistant,'none',answer,nullif(btrim(summary),''),m.id,'message',m.id)
+      on conflict(thread_id,author,helper_reply_for) where helper_reply_for is not null do nothing;
   end if;
-  update public.assistants set last_posted_at=now(),working_on_seq=null where owner_id=new.owner_id and name='chatgpt';
+  update public.assistants set last_posted_at=now(),working_on_seq=null where owner_id=new.owner_id and name=new.assistant;
   return new;
 end;
 $$;

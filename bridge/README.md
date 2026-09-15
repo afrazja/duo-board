@@ -9,6 +9,42 @@ is implemented in the helper. [Board controls and reply delivery](INTERFACE.md)
 are implemented. [Real Codex verification and legacy handoff](VERIFICATION.md)
 cover Level 6. [Windows startup and publication](STARTUP.md) cover Level 7.
 
+## Claude sessions
+
+The helper runs Claude through the Claude Code CLI, beside Codex, when the CLI
+is installed for the signed-in Windows account (the installer and `bridge:startup`
+look on `PATH`, under npm's global folder and under `~/.local/bin`; the
+`DUO_CLAUDE_EXECUTABLE` variable overrides that). Claude Desktop has no supported
+interface for another program to create or continue its sessions, so it is not
+used; Claude Code's headless mode is the documented way to do both:
+
+- A new conversation reserves a session ID locally, saved in `state.json` next to
+  the Codex task ID. Nothing runs in Claude Code until the first Claude-addressed
+  message. That first turn is `claude -p --session-id <id> --name "Duo Board — <title>"`,
+  every later turn is `claude -p --resume <id>`, always from the conversation's
+  workspace folder. Session content lives only in Claude Code's own store; the
+  helper never reads or edits those files, and it keeps no transcript of its own.
+- Each turn is a private child process with read-only tools (`Read`, `Glob`,
+  `Grep`), no MCP servers (`--strict-mcp-config`), the prompt on stdin, and the
+  board's guidance as an appended system prompt. Stop ends that process; a
+  session interrupted mid-answer stays resumable, and one interrupted before
+  Claude Code saved anything is created again under the same reserved ID.
+- Uncertain outcomes (the helper stopped while a turn was running, or the CLI
+  exited after starting without reporting a result) are held for review, like
+  Codex; Claude Code exposes no supported way to read a session's turns back, so
+  they are never re-sent. A Claude problem holds only the Claude lane of that
+  conversation; ChatGPT keeps answering, and Wake clears both lanes.
+- `claude auth status --json` is checked before the first turn after each idle
+  release. A signed-out CLI marks the Claude lane for attention.
+- The helper reports which assistants it runs on every board call. The board
+  creates Claude requests, routes Claude's legacy reads to `helper_managed`, and
+  blocks legacy Claude posts only while the paired helper reports Claude.
+
+Local commands accept `assistant` on `enqueue` and `cancel` (`chatgpt` when
+omitted), and `link` accepts `claudeSessionId` for an existing released session
+and `title` for the session name. A Claude session, like a Codex task, can be
+linked to one conversation only; saved state naming one twice fails closed.
+
 ## Run the local helper
 
 Under your signed-in Windows account, from this repository:
@@ -52,10 +88,10 @@ authentication and secure delivery use a separate helper key; see [step 3](REMOT
 
 | Type | Additional fields | Effect |
 | --- | --- | --- |
-| `link` | `cwd`, optional `threadId` | Associate a local workspace and optionally an existing, released task. Without a task ID, create one on the first request. |
-| `enqueue` | `requestId`, `text` | Save a request; repeated request IDs in the same conversation do not run again. |
-| `stop` | None | Pause the conversation, stop active work, and cancel requests queued before Stop. |
-| `cancel` | `requestId` | Stop only this question; later questions can run without Resume. |
+| `link` | `cwd`, optional `threadId`, `claudeSessionId`, `title` | Associate a local workspace and optionally an existing, released Codex task or Claude session. Without IDs, create the task and reserve the session on the first request. |
+| `enqueue` | `requestId`, `text`, optional `assistant` | Save a request for one assistant; repeated request IDs for the same assistant in the same conversation do not run again. |
+| `stop` | None | Pause the conversation, stop active work of both assistants, and cancel requests queued before Stop. |
+| `cancel` | `requestId`, optional `assistant` | Stop only this question, for one assistant or both; later questions can run without Resume. |
 | `hold` | None | Hold queued work while an active answer finishes locally. Used by Pause conversation. |
 | `resume` | None | Allow new queued requests to run. Previously stopped/uncertain requests are never replayed. |
 | `activity` | None | Refresh an awake conversation's idle timer; never override Sleep or manual Stop. |
@@ -153,7 +189,9 @@ state-write failure. Active work is interrupted; queued work survives. It does
 not delete or kill existing desktop tasks. Malformed state is preserved and
 startup fails rather than resetting links.
 
-Run protocol failure tests without any model calls:
+Run protocol failure tests without any model calls (a local stand-in for the
+Claude Code CLI covers session creation, naming, resume, interruption, restart
+recovery, pause/wake, per-lane attention and the one-session-per-conversation rule):
 
 ```powershell
 npm run test:bridge

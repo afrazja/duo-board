@@ -8,13 +8,18 @@ type Dependencies = {
   waitMs?: number;
 };
 const id = z.string().uuid();
-const conversations = z.array(z.object({ thread_id: id, task_id: id.nullable().optional(), mode: z.enum(["ready","sleeping","paused","attention"]), working_on: id.nullable(), queued: z.number().int().min(0).max(100000) }).strict()).max(200).optional();
-const requestSchema = z.object({ id, thread_id: id, action: z.enum(["wake", "message", "stop", "activity"]), message_id: id.optional() }).strict()
+const assistant = z.enum(["chatgpt", "claude"]);
+const count = z.number().int().min(0).max(100000);
+// Per-conversation status: the Codex task and Claude session IDs plus each assistant's lane.
+const conversations = z.array(z.object({ thread_id: id, task_id: id.nullable().optional(), claude_session_id: id.nullable().optional(), mode: z.enum(["ready","sleeping","paused","attention"]), working_on: id.nullable(), queued: count, claude_working_on: id.nullable().optional(), claude_queued: count.optional(), chatgpt_attention: z.boolean().optional(), claude_attention: z.boolean().optional() }).strict()).max(200).optional();
+// Which assistants the helper runs; an older helper omits it and stays ChatGPT-only.
+const assistants = z.array(assistant).max(2).optional();
+const requestSchema = z.object({ id, thread_id: id, action: z.enum(["wake", "message", "stop", "activity"]), message_id: id.optional(), assistant: assistant.optional() }).strict()
   .refine((r) => (r.action !== "message" || Boolean(r.message_id)) && (r.action !== "activity" || !r.message_id));
 const deviceSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("receive"), instance_id: id, conversations, wait: z.boolean().optional() }).strict(),
-  z.object({ action: z.literal("ack"), instance_id: id, conversations, id, rejected: z.boolean().optional() }).strict(),
-  z.object({ action: z.literal("result"), instance_id: id, conversations, id, status: z.enum(["completed", "stopped", "failed", "attention"]), result: z.string().max(1_000_000).nullable().optional(), error: z.string().max(1000).nullable().optional() }).strict(),
+  z.object({ action: z.literal("receive"), instance_id: id, conversations, assistants, wait: z.boolean().optional() }).strict(),
+  z.object({ action: z.literal("ack"), instance_id: id, conversations, assistants, id, rejected: z.boolean().optional() }).strict(),
+  z.object({ action: z.literal("result"), instance_id: id, conversations, assistants, id, status: z.enum(["completed", "stopped", "failed", "attention"]), result: z.string().max(1_000_000).nullable().optional(), error: z.string().max(1000).nullable().optional() }).strict(),
 ]);
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });

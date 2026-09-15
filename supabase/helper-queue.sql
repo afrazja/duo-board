@@ -14,6 +14,11 @@ create table if not exists public.helper_devices (
 );
 alter table public.helper_devices add column if not exists conversation_report jsonb not null default '[]';
 alter table public.helper_devices add column if not exists report_at timestamptz;
+-- Which assistants the connected helper runs: ChatGPT (Codex) always, Claude
+-- (Claude Code) when it is installed beside it. The helper reports this itself.
+alter table public.helper_devices add column if not exists managed_assistants text[] not null default '{chatgpt}';
+alter table public.helper_devices drop constraint if exists helper_devices_managed_assistants_check;
+alter table public.helper_devices add constraint helper_devices_managed_assistants_check check (managed_assistants <@ array['chatgpt','claude']::text[]);
 create table if not exists public.helper_requests (
   seq bigint generated always as identity unique,
   id uuid primary key,
@@ -40,6 +45,10 @@ alter table public.helper_requests add constraint helper_requests_action_check c
 alter table public.helper_requests drop constraint if exists helper_requests_check1;
 alter table public.helper_requests drop constraint if exists helper_requests_activity_message_check;
 alter table public.helper_requests add constraint helper_requests_activity_message_check check (action <> 'activity' or message_id is null);
+-- A message addressed to both assistants becomes one request per assistant.
+alter table public.helper_requests add column if not exists assistant text not null default 'chatgpt';
+alter table public.helper_requests drop constraint if exists helper_requests_assistant_check;
+alter table public.helper_requests add constraint helper_requests_assistant_check check (assistant in ('chatgpt','claude'));
 create index if not exists helper_requests_delivery on public.helper_requests(device_id, seq) where received_at is null and status = 'pending';
 create index if not exists helper_requests_thread on public.helper_requests(owner_id, thread_id, seq desc);
 alter table public.helper_devices enable row level security;
@@ -59,6 +68,7 @@ declare tid uuid;
 declare mid uuid;
 declare rid uuid;
 declare kind text;
+declare asst text;
 begin
   if p_owner is null then raise exception 'HELPER_UNAUTHORIZED'; end if;
   if p_action = 'configure' then
@@ -72,7 +82,8 @@ begin
   if p_action = 'status' then
     if not found then return jsonb_build_object('configured',false); end if;
     return jsonb_build_object('configured',d.revoked_at is null,'device_id',d.id,'name',d.name,
-      'last_seen_at',d.last_seen_at,'connected',d.revoked_at is null and coalesce(d.last_seen_at > now()-interval '45 seconds',false));
+      'last_seen_at',d.last_seen_at,'connected',d.revoked_at is null and coalesce(d.last_seen_at > now()-interval '45 seconds',false),
+      'managed_assistants',to_jsonb(d.managed_assistants));
   end if;
   if p_action = 'revoke' then
     update public.helper_devices set revoked_at=now() where owner_id=p_owner;
@@ -83,9 +94,10 @@ begin
   if p_action = 'requests' then
     return jsonb_build_object('configured',d.id is not null and d.revoked_at is null,
       'connected',d.revoked_at is null and coalesce(d.report_at>now()-interval '45 seconds',false),
+      'managed_assistants',to_jsonb(coalesce(d.managed_assistants,'{}'::text[])),
       'conversation',(select x from jsonb_array_elements(d.conversation_report) x where x->>'thread_id'=tid::text limit 1),
       'requests',coalesce((select jsonb_agg(x order by x.seq) from
-      (select id,seq,thread_id,action,message_id,status,received_at,finished_at,error
+      (select id,seq,thread_id,action,assistant,message_id,status,received_at,finished_at,error
        from public.helper_requests where owner_id=p_owner and thread_id=tid and action<>'activity' order by seq desc limit 100) x),'[]'::jsonb));
   end if;
   if d.id is null or d.revoked_at is not null then raise exception 'HELPER_NOT_CONFIGURED'; end if;
@@ -93,24 +105,26 @@ begin
   rid := (p_args->>'id')::uuid;
   mid := (p_args->>'message_id')::uuid;
   kind := p_args->>'action';
-  if rid is null or kind not in ('wake','message','stop','activity') or (kind='message' and mid is null) or (kind='activity' and mid is not null) then raise exception 'HELPER_BAD_REQUEST'; end if;
+  asst := coalesce(p_args->>'assistant','chatgpt');
+  if rid is null or kind not in ('wake','message','stop','activity') or asst not in ('chatgpt','claude') or (kind='message' and mid is null) or (kind='activity' and mid is not null) then raise exception 'HELPER_BAD_REQUEST'; end if;
   select * into r from public.helper_requests where id=rid;
   if found then
-    if r.owner_id<>p_owner or r.thread_id<>tid or r.action<>kind or r.message_id is distinct from mid then raise exception 'HELPER_CONFLICT'; end if;
+    if r.owner_id<>p_owner or r.thread_id<>tid or r.action<>kind or r.message_id is distinct from mid or (mid is not null and r.assistant<>asst) then raise exception 'HELPER_CONFLICT'; end if;
     return jsonb_build_object('id',r.id,'status',r.status,'duplicate',true);
   end if;
   if mid is not null then
-    select * into m from public.messages where id=mid and thread_id=tid and author='user' and addressed_to in ('chatgpt','both');
+    select * into m from public.messages where id=mid and thread_id=tid and author='user' and addressed_to in (asst,'both');
     if not found then raise exception 'HELPER_NOT_FOUND'; end if;
-    if kind<>'stop' and 'chatgpt'=any(m.stopped_for) then raise exception 'HELPER_TASK_STOPPED'; end if;
+    if kind<>'stop' and asst=any(m.stopped_for) then raise exception 'HELPER_TASK_STOPPED'; end if;
   end if;
-  insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,prompt)
-    values(rid,p_owner,d.id,tid,kind,mid,m.body) returning * into r;
+  insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,prompt,assistant)
+    values(rid,p_owner,d.id,tid,kind,mid,m.body,asst) returning * into r;
   if kind='stop' then
-    -- Serialize Stop with delivery/results using the same device row lock.
+    -- Serialize Stop with delivery/results using the same device row lock. A
+    -- card Stop cancels one assistant's answer; a conversation Stop cancels all.
     update public.helper_requests set status=case when received_at is null then 'cancelled' else 'stop_requested' end,
       result=null where device_id=d.id and thread_id=tid and seq<r.seq and message_id is not null
-      and action in ('wake','message') and (mid is null or message_id=mid) and status in ('pending','received');
+      and action in ('wake','message') and (mid is null or (message_id=mid and assistant=asst)) and status in ('pending','received');
   end if;
   return jsonb_build_object('id',r.id,'status',r.status,'duplicate',false);
 end;
@@ -136,11 +150,17 @@ begin
       join public.threads t on t.id=(x->>'thread_id')::uuid and t.owner_id=d.owner_id and not t.archived
     ),'[]'::jsonb) where id=d.id;
   end if;
+  if p_args ? 'assistants' then
+    -- The helper reports which assistants it can run. Only known names are kept.
+    update public.helper_devices set managed_assistants=coalesce((
+      select array_agg(distinct x) from jsonb_array_elements_text(p_args->'assistants') x where x in ('chatgpt','claude')
+    ),'{}'::text[]) where id=d.id;
+  end if;
   if p_action='receive' then
     -- Reads do not consume requests. Lost responses are redelivered until the
     -- helper has saved the command locally and acknowledged it.
     select coalesce(jsonb_agg(x order by x.seq),'[]'::jsonb) into response from
-      (select q.id,q.seq,q.thread_id,q.action,q.message_id,q.prompt,q.status,q.created_at
+      (select q.id,q.seq,q.thread_id,q.action,q.assistant,q.message_id,q.prompt,q.status,q.created_at,t.title
        from public.helper_requests q join public.threads t on t.id=q.thread_id
        where q.device_id=d.id and q.owner_id=d.owner_id and t.owner_id=d.owner_id
        and not t.archived and (not t.paused or q.action in ('stop','pause','activity')) and q.received_at is null and q.status='pending'
@@ -178,7 +198,8 @@ revoke all on function public.helper_device(text,uuid,text,jsonb) from public,an
 grant execute on function public.helper_user(uuid,text,jsonb),public.helper_device(text,uuid,text,jsonb) to service_role;
 
 -- A new board conversation gets a durable Wake event. The local helper uses
--- only its own trusted workspace root and creates one Codex task for this UUID.
+-- only its own trusted workspace root and creates one Codex task and one Claude
+-- session for this UUID.
 create or replace function public.helper_queue_new_thread()
 returns trigger language plpgsql security definer set search_path = '' as $$
 begin

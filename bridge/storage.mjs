@@ -7,6 +7,12 @@ import { tmpdir } from "node:os";
 export const keyFor = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isId = (value) => typeof value === "string" && UUID.test(value);
+/** The assistants a helper can manage. ChatGPT runs in Codex; Claude runs in Claude Code. */
+export const ASSISTANTS = ["chatgpt", "claude"];
+export const isAssistant = (value) => ASSISTANTS.includes(value);
+// ChatGPT jobs keep their original key so saved state from the single-assistant
+// helper stays valid; Claude jobs for the same board message get their own key.
+export const jobKeyFor = (conversationKey, assistant, requestId) => assistant === "chatgpt" ? keyFor(conversationKey, requestId) : keyFor(conversationKey, assistant, requestId);
 
 export async function atomicJson(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -45,6 +51,8 @@ export async function acquireWorkerLock(directory) {
   return () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }
 
+const validText = (value, max) => value === undefined || value === null || (typeof value === "string" && value.length <= max);
+
 export class StateStore {
   constructor(directory) { this.file = path.join(directory, "state.json"); this.tail = Promise.resolve(); }
   async load() {
@@ -59,11 +67,23 @@ export class StateStore {
     if (s.workspaceRoot !== undefined && (typeof s.workspaceRoot !== "string" || !path.isAbsolute(s.workspaceRoot))) throw new Error("Invalid helper workspace root; refusing to create conversation folders.");
     for (const [key, c] of Object.entries(s.conversations)) {
       if (!isId(c.ownerId) || !isId(c.conversationId) || key !== keyFor(c.ownerId, c.conversationId) || !path.isAbsolute(c.cwd) || (c.threadId !== null && !isId(c.threadId)) || !["ready", "paused", "attention", "sleeping"].includes(c.mode) || (c.lastActivityAt !== undefined && (!Number.isFinite(c.lastActivityAt) || c.lastActivityAt < 0)) || (c.sleepingAt != null && (!Number.isFinite(c.sleepingAt) || c.sleepingAt < 0))) throw new Error("Invalid saved conversation link; recovery is required.");
+      // Fields added with Claude support. Older state gets their defaults in memory only; no link is changed.
+      if (c.claudeSessionId !== undefined && c.claudeSessionId !== null && !isId(c.claudeSessionId)) throw new Error("Invalid saved Claude session link; recovery is required.");
+      if (c.claudeSessionStarted !== undefined && typeof c.claudeSessionStarted !== "boolean") throw new Error("Invalid saved Claude session link; recovery is required.");
+      if (!validText(c.title, 200)) throw new Error("Invalid saved conversation link; recovery is required.");
+      if (c.attention !== undefined && (!c.attention || typeof c.attention !== "object" || Array.isArray(c.attention) || Object.entries(c.attention).some(([name, reason]) => !isAssistant(name) || !validText(reason, 2000)))) throw new Error("Invalid saved conversation link; recovery is required.");
+      c.claudeSessionId ??= null;
+      c.claudeSessionStarted ??= false;
+      c.title ??= null;
+      c.attention = { chatgpt: null, claude: null, ...(c.attention ?? {}) };
     }
     const assigned = Object.values(s.conversations).map((c) => c.threadId).filter(Boolean);
     if (new Set(assigned).size !== assigned.length) throw new Error("A Codex task is linked to multiple conversations; refusing to mix their histories.");
+    const sessions = Object.values(s.conversations).map((c) => c.claudeSessionId).filter(Boolean);
+    if (new Set(sessions).size !== sessions.length) throw new Error("A Claude session is linked to multiple conversations; refusing to mix their histories.");
     for (const [key, job] of Object.entries(s.jobs)) {
-      if (!isId(job.requestId) || !s.conversations[job.conversationKey] || key !== keyFor(job.conversationKey, job.requestId) || !["queued", "starting", "running", "recovering", "completed", "stopped", "failed", "attention"].includes(job.status) || typeof job.text !== "string") throw new Error("Invalid saved request; recovery is required.");
+      job.assistant ??= "chatgpt";
+      if (!isId(job.requestId) || !isAssistant(job.assistant) || !s.conversations[job.conversationKey] || key !== jobKeyFor(job.conversationKey, job.assistant, job.requestId) || !["queued", "starting", "running", "recovering", "completed", "stopped", "failed", "attention"].includes(job.status) || typeof job.text !== "string") throw new Error("Invalid saved request; recovery is required.");
     }
     return this;
   }

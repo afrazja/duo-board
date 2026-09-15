@@ -9,7 +9,7 @@ import { acquireWorkerLock, atomicJson, prepareDirectory } from "./storage.mjs";
 const moduleDirectory=path.dirname(fileURLToPath(import.meta.url));
 
 /** A per-user supervisor. No listener, browser session, or model calls while unpaired. */
-export async function startBackground({directory, executable, intervalMs=1000, retryMs=30_000, helperFile=path.join(moduleDirectory,"helper.mjs")}) {
+export async function startBackground({directory, executable, claudeExecutable, intervalMs=1000, retryMs=30_000, helperFile=path.join(moduleDirectory,"helper.mjs")}) {
   const control=await prepareDirectory(path.join(directory,"startup"));
   const release=await acquireWorkerLock(control);
   const instance=randomUUID();
@@ -34,7 +34,7 @@ export async function startBackground({directory, executable, intervalMs=1000, r
       if(stop?.instance===instance){void close();return;}
       if(child||Date.now()<nextStart)return;
       try{await stat(path.join(directory,"connection.json"));}catch(e){if(e.code!=="ENOENT")throw e;await report("waiting_for_connection");return;}
-      const current=fork(helperFile,["--state-dir",directory],{windowsHide:true,stdio:["ignore","ignore","ignore","ipc"],env:{...process.env,...(executable?{DUO_CODEX_EXECUTABLE:executable}:{})}});
+      const current=fork(helperFile,["--state-dir",directory],{windowsHide:true,stdio:["ignore","ignore","ignore","ipc"],env:{...process.env,...(executable?{DUO_CODEX_EXECUTABLE:executable}:{}),...(claudeExecutable?{DUO_CLAUDE_EXECUTABLE:claudeExecutable}:{})}});
       child=current;
       current.once("error",()=>{nextStart=Date.now()+retryMs;});
       current.once("close",()=>{if(child===current)child=null;nextStart=Date.now()+retryMs;if(!closing)void report("retrying").catch(()=>{});});
@@ -46,9 +46,9 @@ export async function startBackground({directory, executable, intervalMs=1000, r
 }
 
 if(!process.env.DUO_COMPANION_ENTRY&&process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  const {values}=parseArgs({options:{"state-dir":{type:"string"},codex:{type:"string"}}});
+  const {values}=parseArgs({options:{"state-dir":{type:"string"},codex:{type:"string"},claude:{type:"string"}}});
   const directory=path.resolve(values["state-dir"]??path.join(moduleDirectory,"..",".bridge-state","helper"));
-  const background=await startBackground({directory,executable:values.codex});
+  const background=await startBackground({directory,executable:values.codex,claudeExecutable:values.claude});
   process.on("SIGINT",()=>void background.close());process.on("SIGTERM",()=>void background.close());
   await background.done;
 }

@@ -11,6 +11,7 @@ import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
 import { AccountMenu } from "@/components/account-menu";
 import { HelperControls, useHelper } from "@/components/helper-controls";
+import { helperManages } from "@/lib/helper-view";
 import { groupRows, mergeMessages, playableMessages, roundState, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
@@ -405,16 +406,18 @@ export default function BoardPage() {
     }
   }
 
-  async function stopTask(question: BoardMessage) {
-    if (stopRequests.current.has(question.id)) return;
-    stopRequests.current.add(question.id);
-    setStoppingTasks((current) => [...current, question.id]);
+  // Stop one assistant's answer to one question; the other assistant and later questions continue.
+  async function stopTask(question: BoardMessage, who: "claude" | "chatgpt") {
+    const key = `${who}:${question.id}`;
+    if (stopRequests.current.has(key)) return;
+    stopRequests.current.add(key);
+    setStoppingTasks((current) => [...current, key]);
     setError("");
     try {
       const res = await fetch("/api/messages", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: question.thread_id, message_id: question.id, assistant: "chatgpt" }),
+        body: JSON.stringify({ thread_id: question.thread_id, message_id: question.id, assistant: who }),
       });
       const data = await res.json() as { message?: BoardMessage; error?: string };
       if (!res.ok || !data.message) throw new Error(data.error ?? "Could not stop this task");
@@ -423,8 +426,8 @@ export default function BoardPage() {
     } catch (cause) {
       setError((cause as Error).message);
     } finally {
-      stopRequests.current.delete(question.id);
-      setStoppingTasks((current) => current.filter((id) => id !== question.id));
+      stopRequests.current.delete(key);
+      setStoppingTasks((current) => current.filter((id) => id !== key));
     }
   }
 
@@ -604,8 +607,10 @@ export default function BoardPage() {
         <VoiceToolbar key={activeId} playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
         <div className="grid shrink-0 grid-cols-1 border-b border-zinc-800 text-center text-[12px] font-medium text-zinc-400 lg:grid-cols-2">
-          <div className="hidden items-center justify-center py-2 text-orange-300 lg:flex">Claude</div>
-          <HelperControls helper={helper} paused={Boolean(active?.paused)} />
+          {helperManages(helper.view, "claude")
+            ? <HelperControls helper={helper} paused={Boolean(active?.paused)} assistant="claude" />
+            : <div className="hidden items-center justify-center py-2 text-orange-300 lg:flex">Claude</div>}
+          <HelperControls helper={helper} paused={Boolean(active?.paused)} assistant="chatgpt" />
         </div>
 
         <div className="relative min-h-0 flex-1">
@@ -622,7 +627,7 @@ export default function BoardPage() {
                     <Body text={row.user.body} />
                   </div>
                 )}
-                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} helper={helper.view} onWake={()=>void helper.wake()} waking={helper.waking} paused={active?.paused} stopping={stoppingTasks} onStop={(question) => void stopTask(question)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} helper={helper.view} onWake={()=>void helper.wake()} waking={helper.waking} paused={active?.paused} stopping={stoppingTasks} onStop={(question, who) => void stopTask(question, who)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
               </section>
             ))}
           </div>

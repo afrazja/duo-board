@@ -2,7 +2,7 @@ import { db } from "./db";
 import type { Assistant } from "./agent-auth";
 import { BRIEF_AUDIO_GUIDANCE, normalizeSpokenReply } from "./spoken-reply";
 import { hasLinkedAnswer, nextFloor, withheldFrom, type RoundMessage } from "./rounds";
-import { helperOwnsChatGPT } from "./helper-routing";
+import { helperOwnsAssistant } from "./helper-routing";
 
 export type Author = "user" | Assistant;
 export type Audience = "both" | Assistant | "none";
@@ -384,7 +384,7 @@ export interface NewForAssistant {
   paused?: boolean;
   /** True when the scoped conversation no longer exists (removed): stop serving it. */
   missing?: boolean;
-  /** The background helper owns this account's ChatGPT delivery; stop legacy polling. */
+  /** The background helper owns this assistant for the account; stop legacy polling. */
   helper_managed?: boolean;
   response_guidance?: string;
 }
@@ -422,9 +422,10 @@ async function stampRead(assistant: Assistant, ownerId: string | null, forYou: {
  * to an open round is withheld until this assistant has answered it.
  */
 export async function readNew(assistant: Assistant, ownerId: string | null, limit = 100, threadId?: string): Promise<NewForAssistant> {
-  if (assistant === "chatgpt" && await helperOwnsChatGPT((name,args)=>db().rpc(name,args),ownerId)) {
+  if (await helperOwnsAssistant((name,args)=>db().rpc(name,args),ownerId,assistant)) {
     if (threadId && !(await threadState(threadId,ownerId)).exists) return {messages:[],pending_for_you:0,cursor:0,thread_id:threadId,missing:true};
-    return {messages:[],pending_for_you:0,cursor:0,helper_managed:true,...(threadId?{thread_id:threadId}:{}),response_guidance:"The background helper handles ChatGPT for this account. Stop this legacy polling loop. Do not process cached requests or resume automatically."};
+    const label = assistant === "claude" ? "Claude" : "ChatGPT";
+    return {messages:[],pending_for_you:0,cursor:0,helper_managed:true,...(threadId?{thread_id:threadId}:{}),response_guidance:`The background helper handles ${label} for this account. Stop this legacy polling loop. Do not process cached requests or resume automatically.`};
   }
   if (await hasRounds()) return readNewRounds(assistant, ownerId, limit, threadId);
   if (threadId) throw new Error("Reading one thread needs the blind-round migration (supabase/blind-rounds.sql and thread-sessions.sql)");

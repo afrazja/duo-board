@@ -34,6 +34,10 @@ try {
   if(-not $codex){$candidate=Join-Path $env:USERPROFILE '.codex\.sandbox-bin\codex.exe';if(Test-Path -LiteralPath $candidate){$codex=$candidate}}
   if(-not $codex){$candidate=Join-Path $env:USERPROFILE '.codex\plugins\.plugin-appserver\codex.exe';if(Test-Path -LiteralPath $candidate){$codex=$candidate}}
   if(-not $codex){throw 'Codex was not found. Open the Codex desktop app once, then open this installer again.'}
+  # Claude Code is optional: without it the helper manages ChatGPT only and Claude keeps its own loop.
+  $claude=(Get-Command claude.exe -ErrorAction SilentlyContinue).Source
+  if(-not $claude){$candidate=Join-Path $env:APPDATA 'npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe';if(Test-Path -LiteralPath $candidate){$claude=$candidate}}
+  if(-not $claude){$candidate=Join-Path $env:USERPROFILE '.local\bin\claude.exe';if(Test-Path -LiteralPath $candidate){$claude=$candidate}}
 
   $root=Join-Path $env:LOCALAPPDATA 'DuoBoard\Helper'
   $application=Join-Path $root 'app'
@@ -49,7 +53,7 @@ try {
     Stop-ExistingHelper $state
     Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   }
-  foreach($pathValue in @($node,$codex,$application,$state)){if($pathValue.Contains('"')){throw 'A required Windows path contains an unsupported quote character.'}}
+  foreach($pathValue in @($node,$codex,$claude,$application,$state)){if($pathValue -and $pathValue.Contains('"')){throw 'A required Windows path contains an unsupported quote character.'}}
   foreach($name in $required){Copy-Item -LiteralPath (Join-Path $packageRoot $name) -Destination (Join-Path $application $name) -Force}
   $pairingFile=Join-Path $root ('pair-'+[guid]::NewGuid().ToString('N')+'.txt')
   [IO.File]::WriteAllText($pairingFile,$pairing,(New-Object Text.UTF8Encoding($false)))
@@ -60,13 +64,15 @@ try {
 
   $launcher=Join-Path $application 'run-background.ps1'
   $arguments='-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$launcher+'" -Node "'+$node+'" -Application "'+$application+'" -StateDirectory "'+$state+'" -Codex "'+$codex+'"'
+  if($claude){$arguments+=' -Claude "'+$claude+'"'}
   $action=New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument $arguments -WorkingDirectory $application
   $trigger=New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
   $principal=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
   $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
   Register-ScheduledTask -TaskName $taskName -Description "Duo Board Windows companion: $state" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force|Out-Null
   Start-ScheduledTask -TaskName $taskName
-  Show-Result 'Duo Board Helper is connected and running. You can close this window.'
+  if($claude){Show-Result 'Duo Board Helper is connected and running for ChatGPT and Claude. You can close this window.'}
+  else{Show-Result 'Duo Board Helper is connected and running for ChatGPT. Claude Code was not found, so Claude keeps its own connection; install Claude Code and open this installer again to add it.'}
 } catch {
   Set-Clipboard -Value '' -ErrorAction SilentlyContinue
   Show-Result $_.Exception.Message $true

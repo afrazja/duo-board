@@ -24,7 +24,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const service = JSON.parse(await readFile(path.join(directory, "service.json"), "utf8"));
     let processAlive = false;
     if (service.status === "ready") { try { process.kill(service.pid, 0); processAlive = true; } catch {} }
-    console.log(JSON.stringify({ service: processAlive ? "running" : "offline", conversations: Object.values(saved.conversations).map(({ ownerId, conversationId, threadId, mode, error, lastActivityAt, sleepingAt }) => ({ ownerId, conversationId, threadId, mode, error, lastActivityAt, sleepingAt })), jobs: Object.values(saved.jobs).map(({ requestId, conversationKey, status, error }) => ({ requestId, conversationKey, status, error })) }, null, 2));
+    console.log(JSON.stringify({ service: processAlive ? "running" : "offline", conversations: Object.values(saved.conversations).map(({ ownerId, conversationId, threadId, claudeSessionId, mode, attention, error, lastActivityAt, sleepingAt }) => ({ ownerId, conversationId, threadId, claudeSessionId: claudeSessionId ?? null, mode, attention: attention ?? null, error, lastActivityAt, sleepingAt })), jobs: Object.values(saved.jobs).map(({ requestId, conversationKey, assistant, status, error }) => ({ requestId, conversationKey, assistant: assistant ?? "chatgpt", status, error })) }, null, 2));
   } else {
     const command = JSON.parse(await readFile(path.resolve(values.file), "utf8"));
     console.log(JSON.stringify({ queuedLocally: true, receipt: await submitCommand(directory, command) }));
