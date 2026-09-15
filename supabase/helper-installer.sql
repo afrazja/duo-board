@@ -19,4 +19,5 @@ create index if not exists helper_pairings_expiry on public.helper_pairings(expi
 alter table public.helper_pairings enable row level security;
 revoke all on public.helper_pairings from public, anon, authenticated;
 grant all on public.helper_pairings to service_role;
+notify pgrst, 'reload schema';
 commit;
