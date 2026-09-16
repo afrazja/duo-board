@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { ASSISTANTS, keyFor } from "./storage.mjs";
 import { removeConversationWorkspace } from "./workspace-cleanup.mjs";
+import { createConversationWorkspace, renameConversationWorkspace } from "./workspaces.mjs";
 
 const uuid = z.string().uuid();
 const assistant = z.enum(ASSISTANTS);
@@ -42,6 +42,14 @@ export class RemoteConnection {
       s.remote.status = "connecting"; s.remote.error = null;
     });
     this.instanceId = this.worker.store.snapshot().remote.instanceId;
+    // Saved folder titles are local state and can be migrated even while the
+    // board connection is offline or waiting to be reconnected.
+    await this.syncWorkspaceNames();
+    this.namingTimer = setInterval(() => {
+      if (!this.closed && ["attention", "disconnected"].includes(this.worker.store.state.remote.status)) {
+        void this.syncWorkspaceNames().catch((error) => this.worker.fatal(error));
+      }
+    }, 30_000);
     this.done = this.loop();
   }
   async request(action, payload = {}) {
@@ -86,21 +94,46 @@ export class RemoteConnection {
   async linkConversation(event) {
     const root = this.worker.store.snapshot().workspaceRoot;
     if (typeof root !== "string" || !path.isAbsolute(root)) throw new Error("Reconnect the helper once so it can prepare workspaces for new conversations");
-    await mkdir(root, { recursive: true });
-    const trustedRoot = await realpath(root);
-    const candidate = path.join(trustedRoot, event.thread_id);
-    await mkdir(candidate, { recursive: true });
-    const workspace = await realpath(candidate);
-    if (path.relative(trustedRoot, workspace).toLowerCase() !== event.thread_id.toLowerCase()) throw new Error("The new conversation workspace is outside the helper folder");
+    const workspace = await createConversationWorkspace({ workspaceRoot: root, ownerId: this.config.ownerId, conversationId: event.thread_id, title: event.title, conversations: this.worker.store.snapshot().conversations });
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
     await this.worker.handle({ id: commandId(event.id, "link"), type: "link", cwd: workspace, ...(event.title ? { title: event.title } : {}), ...route });
     // One Codex task and one reserved Claude session, both chosen locally; the board only learns their IDs.
     await this.worker.ensureSessions(route.ownerId, route.conversationId);
   }
+  async syncWorkspaceNames() {
+    if (this.naming) return this.naming;
+    this.naming = this.updateWorkspaceNames();
+    try { return await this.naming; }
+    finally { this.naming = null; }
+  }
+  async updateWorkspaceNames() {
+    const state = this.worker.store.snapshot();
+    if (!state.workspaceRoot) return;
+    for (const [key, c] of Object.entries(state.conversations)) {
+      if (c.ownerId !== this.config.ownerId || c.removedAt || c.creating || (c.workspaceNameRetryAt ?? 0) > Date.now()) continue;
+      if ([...this.worker.active.values()].some((run) => run.conversationKey === key) || Object.values(state.jobs).some((job) => job.conversationKey === key && ["starting", "running", "recovering"].includes(job.status))) continue;
+      try {
+        const result = await renameConversationWorkspace(this.worker.store, key);
+        if (result.changed && c.threadId) this.worker.loaded.delete(c.threadId);
+        if (c.workspaceNameError || c.workspaceNameRetryAt) await this.worker.store.change((s) => { delete s.conversations[key].workspaceNameError; delete s.conversations[key].workspaceNameRetryAt; });
+      } catch (error) {
+        if (["ENOSPC", "EIO", "EROFS"].includes(error.code)) throw error;
+        await this.worker.store.change((s) => {
+          s.conversations[key].workspaceNameError = ["EBUSY", "EPERM", "EACCES"].includes(error.code)
+            ? "Windows is keeping this folder in use or restricting access. The helper will retry its rename."
+            : "The conversation folder could not be renamed yet. The helper will retry.";
+          s.conversations[key].workspaceNameRetryAt = Date.now() + 30_000;
+        });
+      }
+    }
+  }
   async apply(event, serverNow) {
     const ckey = keyFor(this.config.ownerId, event.thread_id);
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
     if (this.worker.store.state.conversations[ckey]?.removedAt) return;
+    // A persisted move may need recovery after a restart. Leave this event
+    // unacknowledged until its verified local folder is ready again.
+    if (this.worker.store.state.conversations[ckey]?.workspaceRename) return;
     const lane = event.assistant ?? "chatgpt";
     let local;
     const waitingFor = event.action === "stop" ? Object.entries(this.worker.store.snapshot().jobs)
@@ -179,6 +212,9 @@ export class RemoteConnection {
       // serving other conversations. Retry on the next authenticated receipt.
       if ([...this.worker.active.values()].some((run) => run.conversationKey === ckey)) continue;
       try {
+        // A crash may have moved the folder before its saved path was committed.
+        // Settle that journal before deciding which folder to remove.
+        if (this.worker.store.state.conversations[ckey].workspaceRename) await renameConversationWorkspace(this.worker.store, ckey);
         const state = this.worker.store.snapshot();
         await removeConversationWorkspace({ workspaceRoot: state.workspaceRoot, conversation: state.conversations[ckey], conversations: state.conversations });
         await this.worker.store.change((s) => {
@@ -207,12 +243,14 @@ export class RemoteConnection {
           if (response.owner_id !== this.config.ownerId || response.device_id !== this.config.deviceId) throw new RemoteError("The board returned a different account or helper connection", true);
           this.worker.setDispatchAllowed(false);
           await this.cleanupRemoved(response.removed_thread_ids ?? []);
+          await this.syncWorkspaceNames();
           // Drain the ordered batch before starting work; Stop may cancel an earlier wake.
           for (const event of response.requests) {
             if (this.closed) break;
             try { await this.apply(event, response.server_now); }
             catch (error) { if (!error.missing) throw error; await this.removed(event.id, event.thread_id); }
           }
+          await this.syncWorkspaceNames();
           await this.flush();
           if (this.closed) break;
           await this.worker.store.change((s) => { s.remote.status = "connected"; s.remote.error = null; });
@@ -234,8 +272,10 @@ export class RemoteConnection {
   delay(ms) { return new Promise((resolve) => { this.wakeDelay = resolve; this.delayTimer = setTimeout(() => { this.wakeDelay = null; resolve(); }, ms); }); }
   async close() {
     this.closed = true; this.worker.setDispatchAllowed(false);
+    clearInterval(this.namingTimer);
     this.activeRequest?.abort(); clearTimeout(this.delayTimer); this.wakeDelay?.();
     await this.done;
+    await this.naming;
   }
 }
 

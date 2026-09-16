@@ -1,4 +1,4 @@
-import { mkdir, readFile, unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { importConnectionBundle } from "../bridge/connect.mjs";
@@ -27,7 +27,5 @@ const response = await fetch(`${origin.origin}/api/agent/helper/pair`, {
 });
 const bundle = await response.json().catch(() => ({}));
 if (!response.ok) throw new Error(bundle.error ?? "The one-time helper connection could not be completed");
-const workspace = path.join(workspaceRoot, bundle.conversationId);
-await mkdir(workspace, { recursive: true });
-await importConnectionBundle({ bundle, workspace, directory: stateDirectory });
-process.stdout.write(JSON.stringify({ ok: true, workspace }));
+await importConnectionBundle({ bundle, workspaceRoot, directory: stateDirectory });
+process.stdout.write(JSON.stringify({ ok: true }));

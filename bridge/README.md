@@ -9,6 +9,18 @@ is implemented in the helper. [Board controls and reply delivery](INTERFACE.md)
 are implemented. [Real Codex verification and legacy handoff](VERIFICATION.md)
 cover Level 6. [Windows startup and publication](STARTUP.md) cover Level 7.
 
+## Conversation folders
+
+The installed helper uses the conversation title for each folder inside `Duo Board Workspaces`.
+Windows-invalid characters are replaced, and duplicate names receive a short conversation-ID suffix.
+An ownership marker keeps the readable name separate from the conversation identity.
+Existing UUID folders and later title changes are migrated while their conversation is idle;
+locked folders retry, and a persisted move journal recovers interrupted renames. Custom workspaces
+outside this managed layout are preserved. Removal verifies ownership before deleting either layout.
+Codex task IDs and Claude session IDs stay unchanged. Claude Code 2.1.223 or later supports resuming
+an existing session from the renamed folder; a missing migrated session is held for review instead
+of being silently replaced.
+
 ## Claude sessions
 
 The helper runs Claude through the Claude Code CLI, beside Codex, when the CLI

@@ -198,7 +198,7 @@ export class BackgroundWorker extends EventEmitter {
     for (const [key, job] of Object.entries(state.jobs)) {
       if (this.active.size >= this.maxConcurrent) break;
       const c = state.conversations[job.conversationKey];
-      if (c.removedAt) continue;
+      if (c.removedAt || c.workspaceRename) continue;
       if (c.mode === "sleeping") continue;
       if (TERMINAL.has(job.status) || (job.nextAttemptAt ?? 0) > Date.now() || ((c.mode !== "ready" || c.attention?.[job.assistant]) && job.status !== "recovering")) continue;
       // One run per assistant per conversation; the two assistants may answer the same question side by side.
@@ -249,6 +249,7 @@ export class BackgroundWorker extends EventEmitter {
   async task(client, ckey) {
     let c = this.store.snapshot().conversations[ckey];
     if (c.removedAt) throw new Error("This conversation was removed.");
+    if (c.workspaceRename) throw new Error("This conversation's workspace move is pending.");
     let thread;
     if (!c.threadId) {
       if (c.creating) throw Object.assign(new Error("Task creation outcome is unknown; review is required"), { permanent: true });
@@ -423,7 +424,7 @@ export class BackgroundWorker extends EventEmitter {
     if (!(await this.claimStart(key))) return;
     // Persist intent BEFORE the side effect. A lost response must never cause replay.
     const after = client.sequence;
-    const { turn } = await client.call("turn/start", { threadId, clientUserMessageId: job.requestId, input: [{ type: "text", text: job.text }] });
+    const { turn } = await client.call("turn/start", { threadId, cwd: this.store.snapshot().conversations[job.conversationKey].cwd, clientUserMessageId: job.requestId, input: [{ type: "text", text: job.text }] });
     runtime.turnId = turn.id;
     await this.store.change((s) => { const j = s.jobs[key]; j.turnId = turn.id; j.status = "running"; });
     if (this.store.snapshot().jobs[key].stopRequested) this.interrupt(runtime);
@@ -467,6 +468,9 @@ export class BackgroundWorker extends EventEmitter {
     // one that exists after all must be resumed. Both checks happen before init,
     // so neither can send the request twice.
     if (outcome.status === "failed" && !outcome.initSeen && !this.store.snapshot().jobs[key].stopRequested) {
+      if (started && outcome.missing && this.store.snapshot().conversations[job.conversationKey].workspaceMovedAt) {
+        throw Object.assign(new Error("Claude could not find this conversation after its folder was renamed. Update Claude Code to a version that supports resuming sessions across folders; the saved session has been preserved."), { permanent: true });
+      }
       if (started && outcome.missing) outcome = await attempt(false);
       else if (!started && outcome.inUse) outcome = await attempt(true);
     }
@@ -481,11 +485,11 @@ export class BackgroundWorker extends EventEmitter {
     const snapshot = this.store.snapshot();
     const job = snapshot.jobs[key];
     const c = snapshot.conversations[job.conversationKey];
-    if (!this.running || !this.dispatchAllowed || c.removedAt || job.stopRequested || TERMINAL.has(job.status) || c.mode !== "ready" || c.attention?.[job.assistant]) return false;
+    if (!this.running || !this.dispatchAllowed || c.removedAt || c.workspaceRename || job.stopRequested || TERMINAL.has(job.status) || c.mode !== "ready" || c.attention?.[job.assistant]) return false;
     return this.store.change((s) => {
       const j = s.jobs[key];
       const entry = s.conversations[j.conversationKey];
-      if (!this.dispatchAllowed || entry.removedAt || j.stopRequested || j.status !== "queued" || entry.mode !== "ready" || entry.attention?.[j.assistant]) return false;
+      if (!this.dispatchAllowed || entry.removedAt || entry.workspaceRename || j.stopRequested || j.status !== "queued" || entry.mode !== "ready" || entry.attention?.[j.assistant]) return false;
       j.status = "starting";
       return true;
     });

@@ -9,6 +9,7 @@ import { remoteConfigSchema, RemoteConnection } from "./remote.mjs";
 import { acquireWorkerLock, atomicJson, keyFor, prepareDirectory, StateStore } from "./storage.mjs";
 import { BackgroundWorker } from "./worker.mjs";
 import { startService } from "./service.mjs";
+import { createConversationWorkspace, renameConversationWorkspace } from "./workspaces.mjs";
 
 /** Import the private download locally; the website never chooses a workspace. */
 export async function importConnection({ file, conversationId, workspace, directory }) {
@@ -20,7 +21,7 @@ export async function importConnection({ file, conversationId, workspace, direct
   return importConnectionBundle({bundle,workspace,directory});
 }
 
-export async function importConnectionBundle({ bundle: input, workspace, directory }) {
+export async function importConnectionBundle({ bundle: input, workspace, workspaceRoot: managedRoot, directory }) {
   const bundle = z.object({ connection:remoteConfigSchema, conversationId:z.string().uuid() }).strict().parse(input);
   const root = await prepareDirectory(directory);
   const release = await acquireWorkerLock(root);
@@ -30,6 +31,16 @@ export async function importConnectionBundle({ bundle: input, workspace, directo
     const connection = new RemoteConnection(worker,bundle.connection);
     const previous = store.state.remote;
     if (previous && (previous.ownerId!==bundle.connection.ownerId || previous.deviceId!==bundle.connection.deviceId || previous.origin!==connection.origin)) throw new Error("This helper belongs to another account or website. Use a separate state directory.");
+    if (managedRoot) {
+      if (workspace) throw new Error("Choose a managed workspace root or an explicit workspace, not both.");
+      if (typeof managedRoot !== "string" || !path.isAbsolute(managedRoot)) throw new Error("The helper workspace root must be an absolute path.");
+      const normalizeRoot = (value) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+      if (store.state.workspaceRoot && normalizeRoot(store.state.workspaceRoot) !== normalizeRoot(managedRoot)) throw new Error("New conversations already use a different local workspace folder.");
+      const key = keyFor(bundle.connection.ownerId,bundle.conversationId);
+      if (store.state.conversations[key]?.workspaceRename) await renameConversationWorkspace(store, key);
+      const existing = store.state.conversations[key];
+      workspace = existing?.cwd ?? await createConversationWorkspace({ workspaceRoot: managedRoot, ownerId: bundle.connection.ownerId, conversationId: bundle.conversationId, conversations: store.state.conversations });
+    }
     await worker.handle({ id:randomUUID(),type:"link",ownerId:bundle.connection.ownerId,conversationId:bundle.conversationId,cwd:workspace });
     const linked=store.state.conversations[keyFor(bundle.connection.ownerId,bundle.conversationId)];
     const workspaceRoot=path.dirname(linked.cwd);

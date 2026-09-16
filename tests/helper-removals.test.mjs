@@ -108,7 +108,7 @@ test("permanent board removal reaches the running helper and deletes only its re
   assert.ok(path.basename(temporary).startsWith("duo-removal-flow-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const stateDirectory = path.join(temporary, "state"), workspaceRoot = path.join(temporary, "workspaces");
-  const removedFolder = path.join(workspaceRoot, removedId), keptFolder = path.join(workspaceRoot, keptId);
+  let removedFolder = path.join(workspaceRoot, removedId), keptFolder = path.join(workspaceRoot, keptId);
   await mkdir(stateDirectory);
   await mkdir(path.join(removedFolder, "nested"), { recursive: true });
   await mkdir(keptFolder);
@@ -144,6 +144,10 @@ test("permanent board removal reaches the running helper and deletes only its re
     await worker.start();
     await remote.start();
     await until(() => store.state.remote.status === "connected");
+    removedFolder = store.state.conversations[keyFor(ownerId, removedId)].cwd;
+    keptFolder = store.state.conversations[keyFor(ownerId, keptId)].cwd;
+    assert.equal(path.basename(removedFolder), "Test");
+    assert.equal(path.basename(keptFolder), "Keep this conversation");
     assert.equal(await readFile(path.join(removedFolder, "nested", "draft.txt"), "utf8"), "This belongs to the removed conversation");
     assert.deepEqual(deliveredReceipts, []);
 

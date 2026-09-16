@@ -197,6 +197,20 @@ test("a session whose first run never persisted is created under the same reserv
   assert.equal(conversation().claudeSessionId, sessionId);
 });
 
+test("a missing Claude session after a workspace move is preserved instead of silently recreated", async (t) => {
+  const { worker, store, command, conversation, turns, home, route } = await setup(t);
+  const first = await worker.handle(command("enqueue", { requestId: randomUUID(), assistant: "claude", text: "saved history" }));
+  await until(() => job(store, first.jobKey).status === "completed");
+  const sessionId = conversation().claudeSessionId;
+  await store.change((s) => { s.conversations[keyFor(route.ownerId, route.conversationId)].workspaceMovedAt = new Date().toISOString(); });
+  await unlink(path.join(home, "sessions", `${sessionId}.json`));
+  const later = await worker.handle(command("enqueue", { requestId: randomUUID(), assistant: "claude", text: "after rename" }));
+  await until(() => job(store, later.jobKey).status === "attention");
+  assert.match(job(store, later.jobKey).error, /saved session has been preserved/);
+  assert.deepEqual((await turns()).filter((turn) => turn.prompt === "after rename").map((turn) => [turn.sessionId, turn.resume]), [[sessionId, true]]);
+  assert.equal(conversation().claudeSessionId, sessionId);
+});
+
 test("a helper without Claude Code manages ChatGPT only and refuses Claude work instead of guessing", async (t) => {
   const { worker, command } = await setup(t, { withClaude: false });
   assert.deepEqual(worker.managed, ["chatgpt"]);
