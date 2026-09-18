@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 /** A labelled disclosure for secondary controls; Escape and outside click close it. */
 export function ControlPopover({ label, children, buttonClass = "", panelClass = "", trigger, above = false }: {
@@ -10,6 +11,7 @@ export function ControlPopover({ label, children, buttonClass = "", panelClass =
   const [position, setPosition] = useState<CSSProperties>({});
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     if (!open) return;
@@ -28,7 +30,7 @@ export function ControlPopover({ label, children, buttonClass = "", panelClass =
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
+      if (!root.current?.contains(event.target as Node) && !panel.current?.contains(event.target as Node)) setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") { setOpen(false); button.current?.focus(); }
@@ -39,6 +41,6 @@ export function ControlPopover({ label, children, buttonClass = "", panelClass =
   }, [open]);
   return <div ref={root} className="relative shrink-0">
     <button ref={button} type="button" aria-label={label} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)} className={`min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:border-zinc-500 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 ${buttonClass}`}>{trigger ?? label}</button>
-    {open && <div id={id} role="region" aria-label={label} style={position} className={`fixed z-40 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-2xl ${panelClass}`}>{children}</div>}
+    {open && createPortal(<div ref={panel} id={id} role="region" aria-label={label} style={position} className={`fixed z-50 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-2xl ${panelClass}`}>{children}</div>, document.body)}
   </div>;
 }
