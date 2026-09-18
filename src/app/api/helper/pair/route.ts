@@ -12,7 +12,7 @@ export async function POST(request: Request) {
     const parsed = z.object({ thread_id: z.string().uuid() }).strict().safeParse(await request.json().catch(() => ({})));
     if (!parsed.success) return Response.json({ error: "Open a conversation before connecting the helper" }, { status: 400 });
     const pairing = await createHelperPairing(user.id, parsed.data.thread_id, origin);
-    return Response.json({ pairing_code: pairing.code, expires_at: pairing.expiresAt, installer_url: "/downloads/DuoBoardHelperSetup.exe" }, {
+    return Response.json({ pairing_code: pairing.code, expires_at: pairing.expiresAt, installer_url: "/downloads/DuoBoardHelperSetup.exe?v=0.2.0" }, {
       status: 201,
       headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
     });

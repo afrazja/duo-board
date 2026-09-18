@@ -14,6 +14,7 @@
     "bridge:control": "node bridge/control.mjs",
     "bridge:startup": "powershell.exe -NoProfile -File bridge/startup.ps1",
     "build:companion": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File companion/build-windows-installer.ps1",
+    "test:companion": "node --test tests/windows-installer.test.mjs tests/codex-executable.test.mjs tests/codex-client.test.mjs tests/background.test.mjs",
     "test:bridge": "node --test tests/codex-client.test.mjs tests/claude-client.test.mjs tests/bridge-worker.test.mjs tests/claude-worker.test.mjs tests/background.test.mjs tests/workspace-cleanup.test.mjs tests/helper-workspace-removal.test.mjs tests/named-workspaces.test.mjs tests/named-workspace-integration.test.mjs",
     "test:helper-queue": "node --experimental-strip-types --test tests/helper-pairing.test.mjs tests/helper-queue.test.mjs tests/helper-ui.test.mjs tests/helper-cutover.test.mjs tests/helper-removals.test.mjs",
     "bridge:verify-app": "node --experimental-strip-types bridge/verify-app.mjs",

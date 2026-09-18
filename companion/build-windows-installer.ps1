@@ -22,6 +22,7 @@ foreach($target in $entries.Keys){
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows\install.ps1') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows\run-background.ps1') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows\launch.vbs') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows\setup-functions.ps1') -Destination $stage
 Write-Output 'Companion bundles staged.'
 
 $downloadDirectory=Join-Path $projectRoot 'public\downloads'
@@ -62,6 +63,7 @@ FILE2=pair.cjs
 FILE3=install.ps1
 FILE4=run-background.ps1
 FILE5=launch.vbs
+FILE6=setup-functions.ps1
 [SourceFiles]
 SourceFiles0=$source
 [SourceFiles0]
@@ -71,6 +73,7 @@ SourceFiles0=$source
 %FILE3%=
 %FILE4%=
 %FILE5%=
+%FILE6%=
 "@
 [IO.File]::WriteAllText($sed,$definition,(New-Object Text.UTF8Encoding($false)))
 Write-Output 'Windows package definition ready.'
@@ -85,6 +88,6 @@ if(-not (Test-Path -LiteralPath $installer) -or (Get-Item -LiteralPath $installe
 $stream=[IO.File]::OpenRead($installer)
 try {$hash=[BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($stream)).Replace('-','').ToLowerInvariant()}
 finally {$stream.Dispose()}
-$manifest=@{version='0.1.0';file='DuoBoardHelperSetup.exe';sha256=$hash;size=(Get-Item -LiteralPath $installer).Length;built_at=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json
+$manifest=@{version='0.2.0';file='DuoBoardHelperSetup.exe';sha256=$hash;size=(Get-Item -LiteralPath $installer).Length;built_at=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json
 [IO.File]::WriteAllText((Join-Path $downloadDirectory 'DuoBoardHelperSetup.json'),$manifest,(New-Object Text.UTF8Encoding($false)))
 Write-Output $manifest

@@ -221,8 +221,28 @@ a real answer, actual Stop, held work, and explicit Resume. It runs five synthet
 turns, archives the temporary task, stops the test helper, and writes
 `.bridge-state/worker-verification-*/verification-result.json`.
 
-## Remaining steps
+## Windows setup and repair
 
-7. Reviewed publication and Windows sign-in startup registration.
+In Duo Board Settings, **Connect helper** copies a one-time pairing code and
+downloads the installer. Open it before copying anything else. Setup discovers
+the current desktop Codex executable, registers the per-user Windows startup
+task, and verifies fresh supervisor/worker processes and the board connection
+before reporting success. Node.js and a signed-in Codex installation are required;
+Claude Code remains optional.
+
+For an existing installation, use **Repair Duo Board Helper** in Windows Start,
+or **Download repair** in Duo Board Settings. Repair preserves the connection,
+conversation mappings and workspaces; it recreates a missing startup task.
+If an answer is running, setup asks the user to finish or stop it first. A revoked
+connection explicitly asks for Connect helper instead of claiming success.
+
+Setup writes stages and errors (never connection keys or pairing codes) to
+`%LOCALAPPDATA%\DuoBoard\Helper\setup.log`. Windows or company policy can still
+block execution; setup does not change those policies. The launcher reports
+failure if PowerShell cannot start. Desktop Codex version changes are resolved
+both at Windows startup and when opening a new model connection.
+
+Run `npm run test:companion` on Windows for setup/repair orchestration, stale
+health checks, connection failures, task ownership and executable-update tests.
 
 Protocol reference: https://learn.chatgpt.com/docs/app-server

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createInterface } from "node:readline";
+import { resolveCodexExecutable } from "./codex-executable.mjs";
 
 /** A private stdio connection. Closing it never terminates the desktop app. */
 export class CodexClient extends EventEmitter {
@@ -13,7 +14,7 @@ export class CodexClient extends EventEmitter {
     this.timeoutMs = timeoutMs;
     this.closed = false;
     this.stderr = "";
-    this.child = spawn(executable, args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(resolveCodexExecutable(executable, { localAppData: env.LOCALAPPDATA }), args, { cwd, env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     this.child.stderr.on("data", (data) => { this.stderr = (this.stderr + data.toString()).slice(-4000); });
     this.lines = createInterface({ input: this.child.stdout });
     this.lines.on("line", (line) => {
