@@ -223,7 +223,7 @@ turns, archives the temporary task, stops the test helper, and writes
 
 ## Windows setup and repair
 
-In Duo Board Settings, **Connect helper** copies a one-time pairing code and
+In Duo Board Settings, **Install or repair helper** copies a one-time pairing code and
 downloads the installer. Open it before copying anything else. Setup discovers
 the current desktop Codex executable, registers the per-user Windows startup
 task, and verifies fresh supervisor/worker processes and the board connection
@@ -231,10 +231,12 @@ before reporting success. Node.js and a signed-in Codex installation are require
 Claude Code remains optional.
 
 For an existing installation, use **Repair Duo Board Helper** in Windows Start,
-or **Download repair** in Duo Board Settings. Repair preserves the connection,
-conversation mappings and workspaces; it recreates a missing startup task.
+or **Install or repair helper** in Duo Board Settings. Both use the same installer.
+Start-menu repair keeps the saved connection; downloading through Settings supplies
+a fresh pairing code. Both preserve conversation mappings and workspaces and
+recreate a missing startup task.
 If an answer is running, setup asks the user to finish or stop it first. A revoked
-connection explicitly asks for Connect helper instead of claiming success.
+connection explicitly asks for Install or repair helper instead of claiming success.
 
 Setup writes stages and errors (never connection keys or pairing codes) to
 `%LOCALAPPDATA%\DuoBoard\Helper\setup.log`. Windows or company policy can still

@@ -78,7 +78,6 @@ export function HelperControls({ helper, paused, assistant = "chatgpt" }: { help
 }
 
 export function HelperSettings({ threadId }: { threadId?:string|null }) {
-  const [configured,setConfigured] = useState(false);
   const [connected,setConnected] = useState(false);
   const [managed,setManaged] = useState<HelperAssistant[]>([]);
   const [busy,setBusy] = useState(false);
@@ -86,7 +85,7 @@ export function HelperSettings({ threadId }: { threadId?:string|null }) {
   const [error,setError] = useState("");
   useEffect(()=>{
     const controller=new AbortController();
-    void fetch("/api/helper",{signal:controller.signal,cache:"no-store"}).then(async(res)=>{const data=await res.json();if(!res.ok)throw new Error(data.error??"Setup is unavailable");setConfigured(data.configured);setConnected(data.connected);setManaged(data.managed_assistants??[]);}).catch((cause)=>{if(!controller.signal.aborted)setError((cause as Error).message);});
+    void fetch("/api/helper",{signal:controller.signal,cache:"no-store"}).then(async(res)=>{const data=await res.json();if(!res.ok)throw new Error(data.error??"Setup is unavailable");setConnected(data.connected);setManaged(data.managed_assistants??[]);}).catch((cause)=>{if(!controller.signal.aborted)setError((cause as Error).message);});
     return ()=>controller.abort();
   },[]);
   useEffect(()=>{
@@ -115,10 +114,10 @@ export function HelperSettings({ threadId }: { threadId?:string|null }) {
         const field=document.createElement("textarea");field.value=data.pairing_code;field.style.position="fixed";field.style.opacity="0";
         document.body.appendChild(field);field.select();
         const copied=document.execCommand("copy");field.remove();
-        if(!copied)throw new Error("Allow clipboard access, then click Connect helper again.");
+        if(!copied)throw new Error("Allow clipboard access, then click Install or repair helper again.");
       }
       const link=document.createElement("a");link.href=data.installer_url;link.download="DuoBoardHelperSetup.exe";link.click();
-      setConfigured(true);setConnected(false);setInstalling(true);
+      setConnected(false);setInstalling(true);
     }catch(cause){setError((cause as Error).message);}finally{setBusy(false);}
   }
   const claudeManaged = managed.includes("claude");
@@ -126,12 +125,11 @@ export function HelperSettings({ threadId }: { threadId?:string|null }) {
     <h3 className="text-sm font-medium text-emerald-200">Background helper</h3>
     <p className="my-2 text-xs leading-5 text-zinc-400">Replies run on your computer and sleep after five idle minutes. Every Duo conversation gets its own Codex task for ChatGPT and, when Claude Code is installed, its own Claude session named after the conversation, each with separate history. Automatic startup keeps Wake and Stop available while you are signed in to Windows.</p>
     <div className="flex flex-wrap gap-2">
-      <button type="button" disabled={busy||!threadId} onClick={()=>void connect()} className="min-h-9 rounded-lg bg-emerald-700 px-3 text-xs font-medium text-white disabled:opacity-50">{busy?"Preparing…":"Connect helper"}</button>
-      {configured&&<a href="/downloads/DuoBoardHelperSetup.exe?v=0.2.0" download="DuoBoardHelperSetup.exe" className="inline-flex min-h-9 items-center rounded-lg border border-zinc-600 px-3 text-xs font-medium text-zinc-200">Download repair</a>}
+      <button type="button" disabled={busy||!threadId} onClick={()=>void connect()} className="min-h-9 rounded-lg bg-emerald-700 px-3 text-xs font-medium text-white disabled:opacity-50">{busy?"Preparing…":"Install or repair helper"}</button>
     </div>
     {!threadId&&<p className="mt-2 text-xs text-zinc-400">Open a conversation before connecting the helper.</p>}
     {connected&&!installing&&<p role="status" className="mt-2 text-xs text-emerald-200">Helper connected and running for {claudeManaged?"ChatGPT and Claude":"ChatGPT"}.{!claudeManaged&&" Claude Code was not found on that computer, so Claude keeps its own connection."}</p>}
-    {configured&&<p className="mt-2 text-xs leading-5 text-zinc-400">Need a repair? Open <strong>Repair Duo Board Helper</strong> from the Windows Start menu, or download repair above and open it. It restores automatic startup and checks your existing connection. Use Connect helper if setup asks you to reconnect.</p>}
+    <p className="mt-2 text-xs leading-5 text-zinc-400">One installer does both: it installs the helper on a new computer, or repairs an existing installation. Download it using the button above, then open the file.</p>
     {installing&&<p role="status" className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs leading-5 text-emerald-100">Open <strong>DuoBoardHelperSetup.exe</strong> from Downloads now, before copying anything else. Wait for setup to confirm that the helper is connected and automatic startup is verified. If setup cannot finish, its message explains the next step.</p>}
     {error&&<p role="alert" className="mt-2 text-xs text-rose-300">{error}</p>}
   </section>;

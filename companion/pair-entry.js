@@ -17,7 +17,7 @@ if (origin.protocol !== "https:" || origin.origin !== values.origin) throw new E
 let code;
 try { code = (await readFile(pairingFile, "utf8")).trim(); }
 finally { await unlink(pairingFile).catch(() => {}); }
-if (!/^duo_pair_[A-Za-z0-9_-]{43}$/.test(code)) throw new Error("Return to Duo Board Settings and click Connect helper again");
+if (!/^duo_pair_[A-Za-z0-9_-]{43}$/.test(code)) throw new Error("Return to Duo Board Settings and click Install or repair helper again");
 const response = await fetch(`${origin.origin}/api/agent/helper/pair`, {
   method: "POST",
   redirect: "error",

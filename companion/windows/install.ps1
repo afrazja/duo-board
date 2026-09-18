@@ -48,11 +48,11 @@ try {
     } catch {$progressWindow=$null}
   }
   if((Test-Path -LiteralPath $logFile) -and (Get-Item -LiteralPath $logFile).Length -gt 256KB){Move-Item -LiteralPath $logFile -Destination (Join-Path $root 'setup.previous.log') -Force}
-  Write-SetupLog 'Setup 0.2.0 started.'
+  Write-SetupLog 'Setup 0.2.1 started.'
   $stage='Checking the connection'
   if(-not $Repair){try {$pairing=(Get-Clipboard -Raw).Trim()}catch {$pairing=$null}}
   if($pairing -notmatch '^duo_pair_[A-Za-z0-9_-]{43}$'){$pairing=$null}
-  if(-not $pairing -and -not (Test-Path -LiteralPath (Join-Path $state 'connection.json'))){throw 'Open Duo Board Settings, click Connect helper, then open this installer immediately. Keep the connection code on your clipboard until setup finishes.'}
+  if(-not $pairing -and -not (Test-Path -LiteralPath (Join-Path $state 'connection.json'))){throw 'Open Duo Board Settings, click Install or repair helper, then open this installer immediately. Keep the connection code on your clipboard until setup finishes.'}
   $stage='Finding the installed apps'; Write-SetupLog $stage
   $node=(Get-Command node.exe -ErrorAction SilentlyContinue).Source
   if(-not $node){$node=Get-ChildItem -Path (Join-Path $env:USERPROFILE '.cache\codex-runtimes') -Filter node.exe -File -Recurse -ErrorAction SilentlyContinue | Where-Object FullName -Match '\\dependencies\\node\\bin\\node.exe$' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName}
@@ -90,7 +90,7 @@ try {
       $ErrorActionPreference='Continue'
       & $node (Join-Path $application 'pair.cjs') --pairing-file $pairingFile --origin 'https://wispbound.com' --state-dir $state --workspace-root $workspaceRoot 2>&1 | Out-Null
       $ErrorActionPreference='Stop'
-      if($LASTEXITCODE -ne 0){throw 'The connection could not be saved. Open Duo Board Settings, click Connect helper for a fresh code, then open the installer again. Check your internet connection too.'}
+      if($LASTEXITCODE -ne 0){throw 'The connection could not be saved. Open Duo Board Settings, click Install or repair helper for a fresh code, then open the installer again. Check your internet connection too.'}
     } finally {$ErrorActionPreference='Stop';Remove-Item -LiteralPath $pairingFile -Force -ErrorAction SilentlyContinue}
     try {if((Get-Clipboard -Raw).Trim() -eq $pairing){Set-Clipboard -Value ''}}catch {}
   }
@@ -98,7 +98,7 @@ try {
   $started=[DateTime]::UtcNow
   Start-ScheduledTask -TaskName 'Duo Board Helper'
   $health=Wait-HelperReady $state $application $started
-  if($health -eq 'reconnect'){throw 'Automatic startup is repaired, but your connection needs renewal. Open Duo Board Settings, click Connect helper, then open the installer again.'}
+  if($health -eq 'reconnect'){throw 'Automatic startup is repaired, but your connection needs renewal. Open Duo Board Settings, click Install or repair helper, then open the installer again.'}
   if($health -eq 'offline'){throw 'Automatic startup is working, but Duo Board is currently unreachable. Check your internet connection. The helper will retry automatically; use Repair Duo Board Helper from Start to check again.'}
   Write-SetupLog 'Verified: startup task, helper processes and board connection are healthy.'
   $models=if($claude){'ChatGPT and Claude'}else{'ChatGPT'}

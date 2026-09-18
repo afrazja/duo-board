@@ -88,6 +88,6 @@ if(-not (Test-Path -LiteralPath $installer) -or (Get-Item -LiteralPath $installe
 $stream=[IO.File]::OpenRead($installer)
 try {$hash=[BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($stream)).Replace('-','').ToLowerInvariant()}
 finally {$stream.Dispose()}
-$manifest=@{version='0.2.0';file='DuoBoardHelperSetup.exe';sha256=$hash;size=(Get-Item -LiteralPath $installer).Length;built_at=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json
+$manifest=@{version='0.2.1';file='DuoBoardHelperSetup.exe';sha256=$hash;size=(Get-Item -LiteralPath $installer).Length;built_at=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json
 [IO.File]::WriteAllText((Join-Path $downloadDirectory 'DuoBoardHelperSetup.json'),$manifest,(New-Object Text.UTF8Encoding($false)))
 Write-Output $manifest
