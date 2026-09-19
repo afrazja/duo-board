@@ -16,7 +16,7 @@ type Ctx = { params: Promise<{ action: string }> };
 
 export async function GET(req: Request, ctx: Ctx) {
   const identity = await identify(req);
-  if (!identity) return unauthorized();
+  if (!identity) return unauthorized(req);
   const { assistant: who, ownerId } = identity;
   const { action } = await ctx.params;
   try {
@@ -39,7 +39,7 @@ export async function GET(req: Request, ctx: Ctx) {
 
 export async function POST(req: Request, ctx: Ctx) {
   const identity = await identify(req);
-  if (!identity) return unauthorized();
+  if (!identity) return unauthorized(req);
   const { assistant: who, ownerId } = identity;
   const { action } = await ctx.params;
   try {

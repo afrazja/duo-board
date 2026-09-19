@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { AuthShell, authButton, authInput } from "@/components/auth-shell";
+import { safeNextPath } from "@/lib/oauth-core";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -38,7 +39,9 @@ export default function LoginPage() {
     const data = await res.json().catch(() => ({})) as { error?: string };
     setBusy(false);
     if (!res.ok) return setError(data.error ?? "Could not sign in");
-    router.replace("/"); router.refresh();
+    // A connector's sign-in sends people back to its consent page.
+    const next = safeNextPath(new URLSearchParams(location.search).get("next"));
+    router.replace(next ?? "/"); router.refresh();
   }
 
   return <AuthShell title="Welcome back" subtitle="Sign in to your private board and assistant connections." footer={<>New here? <Link href="/signup" className="font-medium text-indigo-300 hover:text-indigo-200">Create an account</Link></>}>

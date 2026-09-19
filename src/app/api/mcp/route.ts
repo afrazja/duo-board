@@ -125,7 +125,7 @@ function buildHandler(who: Assistant, ownerId: string | null) {
 
 async function handler(req: Request) {
   const identity = await identify(req);
-  if (!identity) return unauthorized();
+  if (!identity) return unauthorized(req);
   return buildHandler(identity.assistant, identity.ownerId)(req);
 }
 
