@@ -36,9 +36,13 @@ used; Claude Code's headless mode is the documented way to do both:
   every later turn is `claude -p --resume <id>`, always from the conversation's
   workspace folder. Session content lives only in Claude Code's own store; the
   helper never reads or edits those files, and it keeps no transcript of its own.
-- Each turn is a private child process with read-only tools (`Read`, `Glob`,
-  `Grep`), no MCP servers (`--strict-mcp-config`), the prompt on stdin, and the
-  board's guidance as an appended system prompt. Stop ends that process; a
+- Each turn is a private child process with read-only file tools (`Read`, `Glob`,
+  `Grep`) plus the web (`WebSearch`, `WebFetch`), all pre-approved since a
+  headless run cannot ask; no MCP servers (`--strict-mcp-config`), the prompt on
+  stdin, and the board's guidance as an appended system prompt. Set
+  `DUO_CLAUDE_TOOLS` (comma-separated tool names) in the helper's environment to
+  change the list; tools beyond these, such as `Bash` or `Edit`, then act on the
+  computer unattended. Stop ends that process; a
   session interrupted mid-answer stays resumable, and one interrupted before
   Claude Code saved anything is created again under the same reserved ID.
 - Uncertain outcomes (the helper stopped while a turn was running, or the CLI

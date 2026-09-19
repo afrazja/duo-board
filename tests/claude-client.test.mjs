@@ -18,7 +18,7 @@ async function setup(t, extraEnv = {}) {
   return { home, client, calls };
 }
 
-test("a session is created under the reserved ID, named, given read-only tools, and answered from stdin", async (t) => {
+test("a session is created under the reserved ID, named, given read-only and web tools, and answered from stdin", async (t) => {
   const { client, calls, home } = await setup(t);
   assert.deepEqual(await client.initialize(), { loggedIn: true, authMethod: "claude.ai" });
   const sessionId = randomUUID();
@@ -29,10 +29,20 @@ test("a session is created under the reserved ID, named, given read-only tools, 
   assert.equal(outcome.initSeen, true);
   const [, turn] = await calls();
   assert.equal(turn.sessionId, sessionId); assert.equal(turn.resume, false);
-  assert.equal(turn.name, "Duo Board — Plans"); assert.equal(turn.tools, "Read,Glob,Grep"); assert.equal(turn.strictMcp, true);
+  assert.equal(turn.name, "Duo Board — Plans"); assert.equal(turn.tools, "Read,Glob,Grep,WebSearch,WebFetch"); assert.equal(turn.strictMcp, true);
+  // Headless runs cannot ask for permission, so the same tools are pre-approved.
+  assert.equal(turn.allowed, turn.tools);
   assert.equal(turn.prompt, "hello there");
   // The launching Claude session's identity never leaks into the helper's runs.
   assert.deepEqual(turn.env.filter((key) => key !== "CLAUDE_CONFIG_DIR"), []);
+});
+
+test("DUO_CLAUDE_TOOLS replaces the tool list for people who want more or less", async (t) => {
+  const { client, calls, home } = await setup(t, { DUO_CLAUDE_TOOLS: " Read, WebSearch ,Bash " });
+  const run = client.start({ cwd: home, sessionId: randomUUID(), resume: false, name: null, prompt: "hello", systemPrompt: null });
+  assert.equal((await run.done).status, "completed");
+  const [turn] = await calls();
+  assert.equal(turn.tools, "Read,WebSearch,Bash"); assert.equal(turn.allowed, "Read,WebSearch,Bash");
 });
 
 test("resume continues the same session with its earlier turns", async (t) => {

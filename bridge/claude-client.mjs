@@ -12,7 +12,16 @@ import { createInterface } from "node:readline";
 const MISSING_SESSION = /No conversation found with session ID/i;
 const SESSION_IN_USE = /Session ID [0-9a-f-]+ is already in use/i;
 const NOT_SIGNED_IN = /not logged in|not signed in|please run .*login|invalid api key|authentication/i;
-export const DEFAULT_TOOLS = ["Read", "Glob", "Grep"];
+// Read-only file tools plus the web: enough to research an answer without
+// changing anything on the computer. DUO_CLAUDE_TOOLS (comma-separated Claude
+// Code tool names) replaces the list; anything beyond these, such as Bash,
+// Edit or Write, then runs unattended on this machine.
+export const DEFAULT_TOOLS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch"];
+
+export function configuredTools(env = process.env) {
+  const list = (env.DUO_CLAUDE_TOOLS ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+  return list.length ? list : DEFAULT_TOOLS;
+}
 
 /** Claude Code inside the helper must not inherit the launching Claude session's identity. */
 export function childEnvironment(env = process.env) {
@@ -56,7 +65,7 @@ class ClaudeRun extends EventEmitter {
     this.killed = false;
     this.result = null;
     this.output = "";
-    const args = [...client.prefix, "-p", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", sessionId, "--strict-mcp-config", "--tools", client.tools.join(","), "--max-turns", String(client.maxTurns)];
+    const args = [...client.prefix, "-p", "--output-format", "stream-json", "--verbose", resume ? "--resume" : "--session-id", sessionId, "--strict-mcp-config", "--tools", client.tools.join(","), "--allowedTools", client.tools.join(","), "--max-turns", String(client.maxTurns)];
     if (name) args.push("--name", name);
     if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
     this.child = spawn(client.command, args, { cwd, env: client.env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -110,7 +119,7 @@ class ClaudeRun extends EventEmitter {
 
 /** A private per-turn Claude Code process. Closing it never touches Claude Desktop or other sessions. */
 export class ClaudeClient extends EventEmitter {
-  constructor({ executable = "claude", prefixArgs = null, env = process.env, timeoutMs = 30_000, tools = DEFAULT_TOOLS, maxTurns = 10 } = {}) {
+  constructor({ executable = "claude", prefixArgs = null, env = process.env, timeoutMs = 30_000, tools = configuredTools(env), maxTurns = 10 } = {}) {
     super();
     const resolved = resolveClaudeCommand(executable);
     this.command = prefixArgs ? executable : resolved.command;

@@ -1,6 +1,7 @@
 // A local stand-in for the Claude Code CLI's headless interface. It honours the
 // same flags the helper uses (-p, --session-id, --resume, --name, --tools,
-// --strict-mcp-config, --max-turns, --append-system-prompt, auth status --json),
+// --allowedTools, --strict-mcp-config, --max-turns, --append-system-prompt,
+// auth status --json),
 // keeps "sessions" as files under DUO_FAKE_CLAUDE_HOME, and never calls a model.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -22,7 +23,7 @@ if (args[0] === "auth") {
 const flags = {};
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
-  if (["--session-id", "--resume", "--name", "--tools", "--max-turns", "--append-system-prompt", "--output-format"].includes(arg)) { flags[arg] = args[++i]; continue; }
+  if (["--session-id", "--resume", "--name", "--tools", "--allowedTools", "--max-turns", "--append-system-prompt", "--output-format"].includes(arg)) { flags[arg] = args[++i]; continue; }
   if (arg.startsWith("--") || arg === "-p") { flags[arg] = true; continue; }
   flags.positional = arg;
 }
@@ -34,7 +35,7 @@ let prompt = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { prompt += chunk; });
 process.stdin.on("end", () => {
-  log({ command: "turn", sessionId, resume, name: flags["--name"] ?? null, tools: flags["--tools"] ?? null, strictMcp: Boolean(flags["--strict-mcp-config"]), prompt });
+  log({ command: "turn", sessionId, resume, name: flags["--name"] ?? null, tools: flags["--tools"] ?? null, allowed: flags["--allowedTools"] ?? null, strictMcp: Boolean(flags["--strict-mcp-config"]), prompt });
   if (process.env.DUO_FAKE_CLAUDE_FAIL_BEFORE_INIT) { process.stderr.write(process.env.DUO_FAKE_CLAUDE_FAIL_BEFORE_INIT + "\n"); process.exit(1); }
   if (resume && !existsSync(file)) { process.stdout.write(`No conversation found with session ID: ${sessionId}\n`); process.exit(1); }
   if (!resume && existsSync(file)) { process.stderr.write(`Error: Session ID ${sessionId} is already in use.\n`); process.exit(1); }
