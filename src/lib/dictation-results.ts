@@ -12,10 +12,37 @@ function cleanTranscript(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-function newFinalText(previous: string | undefined, current: string): string {
-  if (!current || current === previous) return "";
-  if (previous && current.startsWith(previous)) return current.slice(previous.length).trim();
-  return current;
+function comparableWord(value: string): string {
+  return value.toLocaleLowerCase().replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, "");
+}
+
+function words(value: string): string[] {
+  return cleanTranscript(value).split(" ").filter(Boolean);
+}
+
+function withoutCommittedOverlap(committed: string, current: string): string {
+  if (!committed) return current;
+  const previousWords = words(committed);
+  const currentWords = words(current);
+  const limit = Math.min(previousWords.length, currentWords.length);
+  let overlap = 0;
+
+  for (let size = limit; size > 0; size -= 1) {
+    const previousStart = previousWords.length - size;
+    const matches = currentWords
+      .slice(0, size)
+      .every((word, offset) => comparableWord(word) === comparableWord(previousWords[previousStart + offset]));
+    if (matches) {
+      overlap = size;
+      break;
+    }
+  }
+
+  // A one-word result at a new index can be an intentional repeated word.
+  // Growing mobile transcripts contain two or more words, so they still shed
+  // their replayed prefix here.
+  if (currentWords.length === 1 && overlap === 1) return current;
+  return currentWords.slice(overlap).join(" ");
 }
 
 /**
@@ -28,6 +55,7 @@ function newFinalText(previous: string | undefined, current: string): string {
  */
 export class DictationResultTracker {
   private readonly finalized = new Map<number, string>();
+  private committed = "";
 
   consume(resultIndex: number, results: ArrayLike<DictationResultLike>): DictationUpdate {
     const final: string[] = [];
@@ -37,8 +65,12 @@ export class DictationResultTracker {
       const result = results[index];
       const transcript = cleanTranscript(result[0]?.transcript ?? "");
       if (result.isFinal) {
-        const addition = newFinalText(this.finalized.get(index), transcript);
-        if (addition) final.push(addition);
+        if (this.finalized.get(index) === transcript) continue;
+        const addition = withoutCommittedOverlap(this.committed, transcript);
+        if (addition) {
+          final.push(addition);
+          this.committed = cleanTranscript(`${this.committed} ${addition}`);
+        }
         this.finalized.set(index, transcript);
       } else if (transcript) {
         interim.push(transcript);
@@ -49,6 +81,11 @@ export class DictationResultTracker {
   }
 
   reset(): void {
+    this.finalized.clear();
+    this.committed = "";
+  }
+
+  resume(): void {
     this.finalized.clear();
   }
 }

@@ -139,9 +139,12 @@ function useDictation(onFinal: (text: string) => void) {
   const rec = useRef<Recognition | null>(null);
   const wanted = useRef(false);
   const resultTracker = useRef(new DictationResultTracker());
+  const restartTimer = useRef<number | null>(null);
 
   const stop = useCallback(() => {
     wanted.current = false;
+    if (restartTimer.current !== null) window.clearTimeout(restartTimer.current);
+    restartTimer.current = null;
     rec.current?.stop();
     rec.current = null;
     resultTracker.current.reset();
@@ -153,41 +156,57 @@ function useDictation(onFinal: (text: string) => void) {
     const Ctor = speechCtor();
     if (!Ctor) return;
     resultTracker.current.reset();
-    const r = new Ctor();
-    r.lang = lang || navigator.language;
-    r.continuous = true;
-    r.interimResults = true;
-    r.onresult = (e) => {
-      const update = resultTracker.current.consume(e.resultIndex, e.results);
-      if (update.final) onFinal(update.final);
-      setInterim(update.interim);
-    };
-    r.onerror = (e) => {
-      // Silence and network hiccups are routine; a denied microphone is not.
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        setProblem("Microphone access was blocked. Allow it in the browser's site settings.");
-        wanted.current = false;
-      } else if (e.error !== "no-speech" && e.error !== "aborted") {
-        setProblem(`Dictation error: ${e.error}`);
-      }
-    };
-    r.onend = () => {
-      // Browsers end a session after a pause; keep going until the person stops it.
-      if (wanted.current) {
-        try {
-          r.start();
+    const begin = () => {
+      if (!wanted.current) return;
+      const r = new Ctor();
+      r.lang = lang || navigator.language;
+      r.continuous = true;
+      r.interimResults = true;
+      r.onresult = (e) => {
+        const update = resultTracker.current.consume(e.resultIndex, e.results);
+        if (update.final) onFinal(update.final);
+        setInterim(update.interim);
+      };
+      r.onerror = (e) => {
+        // Silence and network hiccups are routine; a denied microphone is not.
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          setProblem("Microphone access was blocked. Allow it in the browser's site settings.");
+          wanted.current = false;
+          setListening(false);
+        } else if (e.error !== "no-speech" && e.error !== "aborted") {
+          setProblem(`Dictation error: ${e.error}`);
+        }
+      };
+      r.onend = () => {
+        if (rec.current !== r) return;
+        rec.current = null;
+        setInterim("");
+        if (wanted.current) {
+          // Android browsers frequently end recognition after a short pause.
+          // A fresh object avoids carrying the old result list into the resume.
+          resultTracker.current.resume();
+          restartTimer.current = window.setTimeout(() => {
+            restartTimer.current = null;
+            begin();
+          }, 200);
           return;
-        } catch {}
+        }
+        setListening(false);
+      };
+      rec.current = r;
+      try {
+        r.start();
+      } catch {
+        rec.current = null;
+        wanted.current = false;
+        setListening(false);
+        setProblem("Dictation could not resume. Tap the microphone to try again.");
       }
-      rec.current = null;
-      setListening(false);
-      setInterim("");
     };
-    rec.current = r;
     wanted.current = true;
     setProblem("");
     setListening(true);
-    r.start();
+    begin();
   }, [lang, onFinal]);
 
   useEffect(() => () => stop(), [stop]);
