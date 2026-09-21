@@ -5,6 +5,37 @@ export const maxDuration = 300;
 
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 
+type ProviderFailure = Error & {
+  statusCode?: number;
+  responseBody?: string;
+  cause?: unknown;
+};
+
+function transcriptionErrorResponse(cause: unknown): Response {
+  const auth = authErrorResponse(cause);
+  if (auth) return auth;
+
+  const failure = cause as ProviderFailure;
+  const details = [failure.message, failure.responseBody, String(failure.cause ?? "")].join(" ");
+  console.error("[api/transcribe] provider failure", {
+    name: failure.name,
+    message: failure.message,
+    statusCode: failure.statusCode,
+    cause: String(failure.cause ?? ""),
+  });
+
+  if (/valid credit card|customer_verification_required/i.test(details)) {
+    return Response.json({
+      error: "Voice transcription is not activated for this app yet. The Vercel AI Gateway requires a payment card before it unlocks its free credits.",
+      code: "gateway_payment_required",
+    }, { status: 503 });
+  }
+  if (failure.name === "NoTranscriptGeneratedError") {
+    return Response.json({ error: "No speech was detected in this recording." }, { status: 422 });
+  }
+  return Response.json({ error: "The transcription service could not process this recording. Please try again." }, { status: 502 });
+}
+
 export async function POST(request: Request) {
   try {
     const user = await requireUser();
@@ -30,7 +61,6 @@ export async function POST(request: Request) {
     if (!text) return Response.json({ error: "No speech was detected in this recording." }, { status: 422 });
     return Response.json({ text, language: result.language, duration: result.durationInSeconds });
   } catch (cause) {
-    return authErrorResponse(cause)
-      ?? Response.json({ error: "Could not transcribe this recording. Please try again." }, { status: 502 });
+    return transcriptionErrorResponse(cause);
   }
 }
