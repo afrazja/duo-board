@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { AssistantStatus, Audience, ThreadSummary } from "@/lib/board";
 
@@ -12,7 +12,7 @@ import { AccountMenu } from "@/components/account-menu";
 import { useHelper } from "@/components/helper-controls";
 import { helperManages, type HelperAssistant, type HelperView } from "@/lib/helper-view";
 import { groupRows, mergeMessages, roundState, type BoardMessage } from "@/components/round-model";
-import { DictationResultTracker, type DictationResultLike } from "@/lib/dictation-results";
+import { useAudioDictation } from "@/hooks/use-audio-dictation";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -64,154 +64,11 @@ function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// Dictation uses the browser's own speech recognition (Chrome, Edge, Safari).
-// There is no server side to it: the browser turns speech into text and the
-// text lands in the draft like typing would.
-interface Recognition {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  start(): void;
-  stop(): void;
-  onresult: ((e: { resultIndex: number; results: ArrayLike<DictationResultLike> }) => void) | null;
-  onerror: ((e: { error: string }) => void) | null;
-  onend: (() => void) | null;
-}
-
-function speechCtor(): (new () => Recognition) | null {
-  if (typeof window === "undefined") return null;
-  const w = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
-
-const LANG_KEY = "duo_dictation_lang";
-const LANGS: [string, string][] = [
-  ["", "Browser language"],
-  ["en-US", "English"],
-  ["fa-IR", "فارسی"],
-];
-
-// The chosen language lives in localStorage, read as an external store so the
-// server render (no storage) and the browser agree without an effect.
-const langListeners = new Set<() => void>();
-function readLang(): string {
-  try {
-    return localStorage.getItem(LANG_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-function writeLang(value: string) {
-  try {
-    localStorage.setItem(LANG_KEY, value);
-  } catch {}
-  langListeners.forEach((fn) => fn());
-}
-function subscribeLang(fn: () => void) {
-  langListeners.add(fn);
-  return () => {
-    langListeners.delete(fn);
-  };
-}
-
 function joinText(a: string, b: string): string {
   const left = a.trimEnd();
   const right = b.trim();
   if (!right) return a;
   return left ? `${left} ${right}` : right;
-}
-
-/**
- * Press to talk, press again to stop. Final phrases are appended to the draft
- * through onFinal; the phrase still being recognised is exposed as interim so
- * the page can show it without putting it in the textarea yet.
- */
-function useDictation(onFinal: (text: string) => void) {
-  const supported = useSyncExternalStore(
-    () => () => {},
-    () => speechCtor() !== null,
-    () => false
-  );
-  const [listening, setListening] = useState(false);
-  const [interim, setInterim] = useState("");
-  const [problem, setProblem] = useState("");
-  const lang = useSyncExternalStore(subscribeLang, readLang, () => "");
-  const rec = useRef<Recognition | null>(null);
-  const wanted = useRef(false);
-  const resultTracker = useRef(new DictationResultTracker());
-  const restartTimer = useRef<number | null>(null);
-
-  const stop = useCallback(() => {
-    wanted.current = false;
-    if (restartTimer.current !== null) window.clearTimeout(restartTimer.current);
-    restartTimer.current = null;
-    rec.current?.stop();
-    rec.current = null;
-    resultTracker.current.reset();
-    setListening(false);
-    setInterim("");
-  }, []);
-
-  const start = useCallback(() => {
-    const Ctor = speechCtor();
-    if (!Ctor) return;
-    resultTracker.current.reset();
-    const begin = () => {
-      if (!wanted.current) return;
-      const r = new Ctor();
-      r.lang = lang || navigator.language;
-      r.continuous = true;
-      r.interimResults = true;
-      r.onresult = (e) => {
-        const update = resultTracker.current.consume(e.resultIndex, e.results);
-        if (update.final) onFinal(update.final);
-        setInterim(update.interim);
-      };
-      r.onerror = (e) => {
-        // Silence and network hiccups are routine; a denied microphone is not.
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-          setProblem("Microphone access was blocked. Allow it in the browser's site settings.");
-          wanted.current = false;
-          setListening(false);
-        } else if (e.error !== "no-speech" && e.error !== "aborted") {
-          setProblem(`Dictation error: ${e.error}`);
-        }
-      };
-      r.onend = () => {
-        if (rec.current !== r) return;
-        rec.current = null;
-        setInterim("");
-        if (wanted.current) {
-          // Android browsers frequently end recognition after a short pause.
-          // A fresh object avoids carrying the old result list into the resume.
-          resultTracker.current.resume();
-          restartTimer.current = window.setTimeout(() => {
-            restartTimer.current = null;
-            begin();
-          }, 200);
-          return;
-        }
-        setListening(false);
-      };
-      rec.current = r;
-      try {
-        r.start();
-      } catch {
-        rec.current = null;
-        wanted.current = false;
-        setListening(false);
-        setProblem("Dictation could not resume. Tap the microphone to try again.");
-      }
-    };
-    wanted.current = true;
-    setProblem("");
-    setListening(true);
-    begin();
-  }, [lang, onFinal]);
-
-  useEffect(() => () => stop(), [stop]);
-
-  return { supported, listening, interim, problem, lang, setLang: writeLang, stop, toggle: () => (listening ? stop() : start()) };
 }
 
 function AudienceBadge({ to }: { to: Audience }) {
@@ -227,6 +84,10 @@ function MicIcon({ className }: { className?: string }) {
       <path d="M12 18v3" />
     </svg>
   );
+}
+
+function recordingTime(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function SendIcon() {
@@ -277,8 +138,8 @@ export default function BoardPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const followingLatest = useRef(true);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
-  const dictation = useDictation(appendToDraft);
-  const stopDictation = dictation.stop;
+  const dictation = useAudioDictation(appendToDraft);
+  const stopDictation = dictation.cancel;
 
   const acceptMessages = useCallback((threadId: string, incoming: BoardMessage[]) => {
     if (loaded.current.threadId !== threadId) return;
@@ -405,12 +266,13 @@ export default function BoardPage() {
   async function send(e?: FormEvent) {
     e?.preventDefault();
     if (answerModeSaveVersion.current % 2 !== 0) return;
-    const body = draft.trim();
-    if (!body || !activeId || sending) return;
+    if (!activeId || sending || dictation.starting || dictation.transcribing || (!draft.trim() && !dictation.listening)) return;
     const threadId = activeId;
-    stopDictation();
     setSending(true);
     try {
+      const transcript = dictation.listening ? await dictation.stop() : "";
+      const body = joinText(draft, transcript).trim();
+      if (!body) throw new Error(dictation.problem || "No speech was detected. Please try again.");
       const res = await fetch("/api/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -744,30 +606,23 @@ export default function BoardPage() {
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }}
               rows={1}
-              placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write a message…"}
+              placeholder={dictation.listening ? "Recording… tap Send or the microphone to finish" : dictation.transcribing ? "Transcribing recording…" : "Write a message…"}
               aria-label="Message"
               className={`field-sizing-content block max-h-32 min-h-12 w-full resize-none rounded-xl border bg-zinc-950 py-2.5 pl-3 pr-32 text-[15px] leading-6 outline-none focus:border-indigo-500 lg:max-h-40 lg:min-h-20 lg:resize-y lg:pr-[21rem] ${dictation.listening ? "border-rose-600" : "border-zinc-700"}`}
             />
             <div role="group" aria-label="Message actions" className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
-              {dictation.supported && <>
-                <button type="button" onClick={dictation.toggle} aria-pressed={dictation.listening} aria-label={dictation.listening ? "Stop dictation" : "Dictate"} className={`flex min-h-9 items-center gap-2 rounded-lg border px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 lg:px-3 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
-                  <MicIcon /><span className="hidden lg:inline">{dictation.listening ? "Stop dictation" : "Dictate"}</span>
-                </button>
-                <ControlPopover label="Dictation settings" trigger="⌄" above buttonClass="min-h-9 px-2.5">
-                  <label className="block text-[13px] font-medium text-zinc-200">Dictation language
-                    <select value={dictation.lang} onChange={(e) => dictation.setLang(e.target.value)} disabled={dictation.listening} aria-label="Dictation language" className="mt-2 min-h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-[13px] text-zinc-200 disabled:opacity-50">
-                      {LANGS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
-                    </select>
-                  </label>
-                </ControlPopover>
-              </>}
+              {dictation.supported && <button type="button" onClick={dictation.toggle} disabled={dictation.starting || dictation.transcribing} aria-pressed={dictation.listening} aria-label={dictation.starting ? "Starting microphone" : dictation.listening ? "Stop and transcribe recording" : dictation.transcribing ? "Transcribing recording" : "Record voice message"} title="Record audio, then convert it to text" className={`flex min-h-9 items-center gap-2 rounded-lg border px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:opacity-50 lg:px-3 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
+                <MicIcon /><span className="hidden lg:inline">{dictation.starting ? "Starting…" : dictation.listening ? "Stop recording" : dictation.transcribing ? "Transcribing…" : "Record"}</span>
+              </button>}
               <span className="mx-2 hidden text-[12px] text-zinc-500 lg:inline">Ctrl+Enter to send</span>
-              <button type="submit" aria-label={sending ? "Sending message" : active?.paused ? "Queue message" : "Send message"} disabled={sending || savingAnswerMode || !draft.trim()} className="flex min-h-9 min-w-9 items-center justify-center rounded-lg bg-indigo-500 px-2 text-[14px] font-semibold text-white hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 disabled:opacity-40 lg:px-5">
+              <button type="submit" aria-label={sending ? "Sending message" : active?.paused ? "Queue message" : "Send message"} disabled={sending || savingAnswerMode || dictation.starting || dictation.transcribing || (!draft.trim() && !dictation.listening)} className="flex min-h-9 min-w-9 items-center justify-center rounded-lg bg-indigo-500 px-2 text-[14px] font-semibold text-white hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 disabled:opacity-40 lg:px-5">
                 <span className="lg:hidden"><SendIcon /></span><span className="hidden lg:inline">{sending ? "Sending…" : active?.paused ? "Queue message" : "Send"}</span>
               </button>
             </div>
           </div>
-          {dictation.interim && <p className="mt-1 text-[14px] italic text-zinc-400">{dictation.interim}…</p>}
+          {dictation.starting && <p role="status" className="mt-1 text-[12px] text-zinc-400">Starting microphone…</p>}
+          {dictation.listening && <p role="status" className="mt-1 text-[12px] text-rose-300">Recording · {recordingTime(dictation.elapsed)} · Tap Send or the microphone to finish.</p>}
+          {dictation.transcribing && <p role="status" className="mt-1 text-[12px] text-zinc-400">Transcribing the complete recording…</p>}
           {dictation.problem && <p role="alert" className="mt-1 text-[12px] text-rose-300">{dictation.problem}</p>}
         </form>
       </main>
