@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { CodexClient } from "./codex-client.mjs";
 import { ClaudeClient, findClaudeExecutable } from "./claude-client.mjs";
 import { startService } from "./service.mjs";
+import { LocalTranscriber } from "./transcribe.mjs";
 
 /** Codex is required; Claude Code is managed when its CLI is installed for this account. */
 export async function clientFactories(env = process.env) {
@@ -26,7 +27,9 @@ if (values.help) {
   try { remoteConfig = JSON.parse(await readFile(configuration,"utf8")); }
   catch (error) { if(values["remote-config"] || error.code!=="ENOENT") throw error; }
   const workerOptions = await clientFactories();
-  const service = await startService({ directory, remoteConfig, workerOptions, onFatal: (error) => { console.error(JSON.stringify({ status: "error", message: error.message })); process.exitCode = 1; } });
+  const transcriber = process.env.DUO_WHISPER_EXECUTABLE && process.env.DUO_WHISPER_MODEL
+    ? new LocalTranscriber({ executable: process.env.DUO_WHISPER_EXECUTABLE, model: process.env.DUO_WHISPER_MODEL, directory: path.join(directory, "transcription") }) : null;
+  const service = await startService({ directory, remoteConfig, workerOptions, remoteOptions: { transcriber }, onFatal: (error) => { console.error(JSON.stringify({ status: "error", message: error.message })); process.exitCode = 1; } });
   console.log(JSON.stringify({ status: "ready", directory, assistants: service.worker.managed }));
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; await service.close(); };

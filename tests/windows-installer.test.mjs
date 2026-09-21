@@ -20,6 +20,7 @@ test('Windows startup health rejects stale state, dead processes and revoked con
 // fixtures never register a real task, touch the clipboard, or use credentials.
 const mocks = `
 function Record([string]$value){Add-Content -LiteralPath (Join-Path $env:DUO_TEST_ROOT 'events.txt') -Value $value}
+function Install-Whisper {param($application);New-Item -ItemType Directory -Force -Path (Join-Path $application 'whisper')|Out-Null;Record 'install-whisper'}
 function Get-Clipboard {if($env:DUO_TEST_SCENARIO -in @('fresh','pair-failure')){return ('duo_pair_'+('x'*43))};return 'ordinary clipboard text'}
 function Set-Clipboard {param($Value);Record 'clear-clipboard'}
 function Get-Command {param($Name,$ErrorAction);if($Name -eq 'node.exe'){return @{Source=$env:DUO_TEST_NODE}};if($Name -eq 'claude.exe'){return $null};return Microsoft.PowerShell.Core\\Get-Command $Name -ErrorAction SilentlyContinue}
@@ -48,7 +49,7 @@ for (const scenario of ['fresh','repair','unrelated','registration-failure','pai
     const root = await mkdtemp(path.join(tmpdir(), 'duo-setup-test-'));
     t.after(() => rm(root, { recursive: true, force: true }));
     const pkg = path.join(root, 'package'); await mkdir(pkg);
-    for(const name of ['install.ps1','launch.vbs','run-background.ps1']) await copyFile(path.join(source,name),path.join(pkg,name));
+    for(const name of ['install.ps1','launch.vbs','run-background.ps1','THIRD_PARTY_NOTICES.txt']) await copyFile(path.join(source,name),path.join(pkg,name));
     await writeFile(path.join(pkg,'setup-functions.ps1'),(await readFile(path.join(source,'setup-functions.ps1'),'utf8')) + mocks);
     for(const name of ['background.cjs','helper.cjs']) await writeFile(path.join(pkg,name),'// fixture');
     await writeFile(path.join(pkg,'pair.cjs'),`const fs=require('node:fs'),path=require('node:path');fs.appendFileSync(path.join(process.env.DUO_TEST_ROOT,'events.txt'),'pair\\n');if(process.env.DUO_TEST_SCENARIO==='pair-failure')process.exit(1);const dir=process.argv[process.argv.indexOf('--state-dir')+1];fs.writeFileSync(path.join(dir,'connection.json'),JSON.stringify({sentinel:'paired'}));`);
@@ -65,7 +66,7 @@ for (const scenario of ['fresh','repair','unrelated','registration-failure','pai
     const events=await readFile(path.join(root,'events.txt'),'utf8').catch(()=> '');
     assert.equal(failed,!['fresh','repair'].includes(scenario),text);
     if(['fresh','repair'].includes(scenario)){
-      assert.match(text,/Automatic startup is verified/);assert.match(events,/register-task[\s\S]*repair-shortcut[\s\S]*start-task[\s\S]*health-check/);
+      assert.match(text,/automatic startup are verified/i);assert.match(events,/install-whisper[\s\S]*register-task[\s\S]*repair-shortcut[\s\S]*start-task[\s\S]*health-check/);
       if(scenario==='fresh')assert.ok(events.indexOf('register-task')<events.indexOf('pair\n'));
       else {assert.equal(await readFile(path.join(state,'connection.json'),'utf8'),'original connection');assert.doesNotMatch(events,/clear-clipboard|^pair$/m);}
     } else {

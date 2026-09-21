@@ -4,17 +4,21 @@ import { readFile } from "node:fs/promises";
 import { CodexClient } from "../bridge/codex-client.mjs";
 import { ClaudeClient, findClaudeExecutable } from "../bridge/claude-client.mjs";
 import { startService } from "../bridge/service.mjs";
+import { LocalTranscriber } from "../bridge/transcribe.mjs";
 
 const { values } = parseArgs({ options: { "state-dir": { type: "string" } } });
 const directory = path.resolve(values["state-dir"]);
 const configuration = path.join(directory, "connection.json");
 const remoteConfig = JSON.parse(await readFile(configuration, "utf8"));
+const application = path.dirname(path.resolve(process.argv[1]));
+const transcriber = new LocalTranscriber({ executable: path.join(application, "whisper", "whisper-cli.exe"), model: path.join(application, "whisper", "ggml-base-q5_1.bin"), directory: path.join(directory, "transcription") });
 // The installer passes the Claude Code CLI it found through DUO_CLAUDE_EXECUTABLE;
 // without one, the helper manages ChatGPT only and the board keeps its Claude loop.
 const claude = await findClaudeExecutable();
 const service = await startService({
   directory,
   remoteConfig,
+  remoteOptions: { transcriber },
   workerOptions: {
     clientFactory: () => new CodexClient({ executable: process.env.DUO_CODEX_EXECUTABLE || "codex" }),
     clientFactories: claude ? { claude: () => new ClaudeClient({ executable: claude }) } : {},

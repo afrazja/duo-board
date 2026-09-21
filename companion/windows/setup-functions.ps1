@@ -4,6 +4,42 @@ function Find-DesktopCodex {
     ForEach-Object {Get-Item -LiteralPath (Join-Path $_.FullName 'codex.exe') -ErrorAction SilentlyContinue} |
     Where-Object {-not $_.PSIsContainer} | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
+function Install-Whisper([string]$application) {
+  $whisper=Join-Path $application 'whisper'
+  $executable=Join-Path $whisper 'whisper-cli.exe'
+  $model=Join-Path $whisper 'ggml-base-q5_1.bin'
+  $modelSha1='a3733eda680ef76256db5fc5dd9de8629e62c5e7'
+  $binaryUrl='https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip'
+  $binarySha256='49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a'
+  if($env:PROCESSOR_ARCHITECTURE -eq 'ARM64'){
+    $binaryUrl='https://github.com/ggml-org/whisper.cpp/releases/download/b5130/whisper-bin-win-cpu-arm64.zip'
+    $binarySha256='799543b926ab5b6c2d60cab269a2092e0ae8d27820e9e15429e59de3699546fc'
+  }
+  $ready=(Test-Path -LiteralPath $executable -PathType Leaf) -and (Test-Path -LiteralPath $model -PathType Leaf)
+  if($ready){
+    $ready=((Get-FileHash -LiteralPath $model -Algorithm SHA1).Hash.ToLowerInvariant() -eq $modelSha1)
+    if($ready){return}
+  }
+  New-Item -ItemType Directory -Force -Path $application,$whisper | Out-Null
+  $download=Join-Path $application ('whisper-download-'+[guid]::NewGuid().ToString('N'))
+  $archive=$download+'.zip'
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $binaryUrl -OutFile $archive
+    if((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $binarySha256){throw 'The Whisper program download failed its security check. Run setup again.'}
+    Expand-Archive -LiteralPath $archive -DestinationPath $download -Force
+    $cli=Get-ChildItem -LiteralPath $download -Filter whisper-cli.exe -File -Recurse | Select-Object -First 1
+    if(-not $cli){throw 'The Whisper program download was incomplete. Run setup again.'}
+    Get-ChildItem -LiteralPath $cli.Directory.FullName -File | Copy-Item -Destination $whisper -Force
+    Invoke-WebRequest -UseBasicParsing -Uri 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin?download=true' -OutFile ($model+'.download')
+    if((Get-FileHash -LiteralPath ($model+'.download') -Algorithm SHA1).Hash.ToLowerInvariant() -ne $modelSha1){throw 'The Whisper language model download failed its security check. Run setup again.'}
+    Move-Item -LiteralPath ($model+'.download') -Destination $model -Force
+    if(-not (Test-Path -LiteralPath $executable -PathType Leaf)){throw 'Whisper was not installed. Run setup again.'}
+  } finally {
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $download -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ($model+'.download') -Force -ErrorAction SilentlyContinue
+  }
+}
 function Get-HelperProcess([int]$processId,[string]$scriptFile,[string]$stateDirectory) {
   if($processId -le 0){return $null}
   $process=Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue

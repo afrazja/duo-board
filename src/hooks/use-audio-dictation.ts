@@ -27,23 +27,70 @@ function preferredMimeType(): string {
   return MIME_TYPES.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
 }
 
-function extensionFor(type: string): string {
-  if (type.includes("mp4")) return "m4a";
-  if (type.includes("ogg")) return "ogg";
-  return "webm";
+function wait(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => { window.clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, { once: true });
+  });
 }
 
-async function requestTranscript(blob: Blob, signal: AbortSignal): Promise<string> {
-  if (blob.size > MAX_AUDIO_BYTES) throw new Error("This recording is too large. Please split it into shorter parts.");
+async function whisperWav(blob: Blob): Promise<Blob> {
+  const context = new AudioContext();
+  try {
+    const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+    const frames = Math.ceil(decoded.duration * 16_000);
+    const offline = new OfflineAudioContext(1, frames, 16_000);
+    const source = offline.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offline.destination);
+    source.start();
+    const rendered = await offline.startRendering();
+    const samples = rendered.getChannelData(0);
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const write = (offset: number, value: string) => { for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i)); };
+    write(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); write(8, "WAVE"); write(12, "fmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, 16_000, true);
+    view.setUint32(28, 32_000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i += 1) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  } finally { await context.close(); }
+}
+
+async function requestTranscript(blob: Blob, threadId: string, signal: AbortSignal): Promise<string> {
+  const wav = await whisperWav(blob);
+  if (wav.size > MAX_AUDIO_BYTES) throw new Error("This recording is too large. Please split it into shorter parts.");
   const form = new FormData();
-  form.append("audio", blob, `dictation.${extensionFor(blob.type)}`);
+  form.append("thread_id", threadId);
+  form.append("audio", wav, "dictation.wav");
   const response = await fetch("/api/transcribe", { method: "POST", body: form, signal });
-  const data = (await response.json().catch(() => ({}))) as { text?: string; error?: string };
-  if (!response.ok || !data.text?.trim()) throw new Error(data.error ?? "Could not transcribe this recording.");
-  return data.text.trim();
+  const queued = (await response.json().catch(() => ({}))) as { id?: string; error?: string };
+  if (!response.ok || !queued.id) throw new Error(queued.error ?? "Could not queue this recording for local transcription.");
+  try {
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await wait(1000, signal);
+      const result = await fetch(`/api/transcribe?id=${encodeURIComponent(queued.id)}`, { signal, cache: "no-store" });
+      const data = (await result.json().catch(() => ({}))) as { status?: string; text?: string; error?: string };
+      if (!result.ok) throw new Error(data.error ?? "Could not read the local transcription result.");
+      if (data.status === "completed") {
+        if (!data.text?.trim()) throw new Error("No speech was detected in this recording.");
+        return data.text.trim();
+      }
+      if (["failed", "attention"].includes(data.status ?? "")) throw new Error(data.error ?? "The helper could not transcribe this recording.");
+      if (["stopped", "cancelled"].includes(data.status ?? "")) throw new Error("This transcription was stopped.");
+    }
+    throw new Error("Local transcription took too long. Please try a shorter recording.");
+  } catch (cause) {
+    if ((cause as Error).name === "AbortError") void fetch(`/api/transcribe?id=${encodeURIComponent(queued.id)}`, { method: "DELETE", keepalive: true });
+    throw cause;
+  }
 }
 
-export function useAudioDictation(onTranscript: (text: string) => void) {
+export function useAudioDictation(onTranscript: (text: string) => void, threadId: string | null) {
   const supported = useSyncExternalStore(() => () => {}, recorderSupported, () => false);
   const [starting, setStarting] = useState(false);
   const [listening, setListening] = useState(false);
@@ -150,7 +197,8 @@ export function useAudioDictation(onTranscript: (text: string) => void) {
         }
         setTranscribing(true);
         try {
-          const text = await requestTranscript(blob, session.abort.signal);
+          if (!threadId) throw new Error("Choose a conversation before recording.");
+          const text = await requestTranscript(blob, threadId, session.abort.signal);
           if (session.discard || current.current !== session) {
             settle("");
             return;
@@ -182,7 +230,7 @@ export function useAudioDictation(onTranscript: (text: string) => void) {
         ? "Microphone access was blocked. Allow it in the browser's site settings."
         : "The microphone could not start. Please try again.");
     }
-  }, [starting, transcribing]);
+  }, [starting, transcribing, threadId]);
 
   useEffect(() => () => cancel(), [cancel]);
 

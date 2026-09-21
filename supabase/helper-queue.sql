@@ -19,13 +19,18 @@ alter table public.helper_devices add column if not exists report_at timestamptz
 alter table public.helper_devices add column if not exists managed_assistants text[] not null default '{chatgpt}';
 alter table public.helper_devices drop constraint if exists helper_devices_managed_assistants_check;
 alter table public.helper_devices add constraint helper_devices_managed_assistants_check check (managed_assistants <@ array['chatgpt','claude']::text[]);
+-- Optional helper features are reported explicitly so a newer board never
+-- queues work that an older installed helper cannot understand.
+alter table public.helper_devices add column if not exists capabilities text[] not null default '{}';
+alter table public.helper_devices drop constraint if exists helper_devices_capabilities_check;
+alter table public.helper_devices add constraint helper_devices_capabilities_check check (capabilities <@ array['local_transcription']::text[]);
 create table if not exists public.helper_requests (
   seq bigint generated always as identity unique,
   id uuid primary key,
   owner_id uuid not null references auth.users(id) on delete cascade,
   device_id uuid not null references public.helper_devices(id) on delete cascade,
   thread_id uuid not null references public.threads(id) on delete cascade,
-  action text not null check (action in ('wake', 'message', 'stop', 'pause', 'activity')),
+  action text not null check (action in ('wake', 'message', 'stop', 'pause', 'activity', 'transcribe')),
   message_id uuid references public.messages(id) on delete cascade,
   prompt text,
   status text not null default 'pending' check (status in ('pending','received','stop_requested','completed','stopped','failed','attention','cancelled')),
@@ -41,12 +46,18 @@ create table if not exists public.helper_requests (
 );
 -- Also upgrade a development database that already applied step 3.
 alter table public.helper_requests drop constraint if exists helper_requests_action_check;
-alter table public.helper_requests add constraint helper_requests_action_check check (action in ('wake','message','stop','pause','activity'));
+alter table public.helper_requests add constraint helper_requests_action_check check (action in ('wake','message','stop','pause','activity','transcribe'));
 alter table public.helper_requests drop constraint if exists helper_requests_check1;
 alter table public.helper_requests drop constraint if exists helper_requests_activity_message_check;
 alter table public.helper_requests add constraint helper_requests_activity_message_check check (action <> 'activity' or message_id is null);
 -- A message addressed to both assistants becomes one request per assistant.
 alter table public.helper_requests add column if not exists assistant text not null default 'chatgpt';
+alter table public.helper_requests add column if not exists audio_sha256 text;
+alter table public.helper_requests add column if not exists audio_bytes integer;
+alter table public.helper_requests drop constraint if exists helper_requests_audio_sha256_check;
+alter table public.helper_requests add constraint helper_requests_audio_sha256_check check (audio_sha256 is null or audio_sha256 ~ '^[a-f0-9]{64}$');
+alter table public.helper_requests drop constraint if exists helper_requests_audio_bytes_check;
+alter table public.helper_requests add constraint helper_requests_audio_bytes_check check (audio_bytes is null or audio_bytes between 44 and 20971520);
 alter table public.helper_requests drop constraint if exists helper_requests_assistant_check;
 alter table public.helper_requests add constraint helper_requests_assistant_check check (assistant in ('chatgpt','claude'));
 create index if not exists helper_requests_delivery on public.helper_requests(device_id, seq) where received_at is null and status = 'pending';
@@ -75,7 +86,7 @@ begin
     insert into public.helper_devices(owner_id, name, token_hash)
       values(p_owner, p_args->>'name', p_args->>'token_hash')
       on conflict(owner_id) do update set name=excluded.name, token_hash=excluded.token_hash,
-        revoked_at=null, instance_id=null, last_seen_at=null,conversation_report='[]',report_at=null returning * into d;
+        revoked_at=null, instance_id=null, last_seen_at=null,conversation_report='[]',report_at=null,capabilities='{}' returning * into d;
     return jsonb_build_object('device_id',d.id,'owner_id',d.owner_id);
   end if;
   select * into d from public.helper_devices where owner_id=p_owner for no key update;
@@ -83,7 +94,7 @@ begin
     if not found then return jsonb_build_object('configured',false); end if;
     return jsonb_build_object('configured',d.revoked_at is null,'device_id',d.id,'name',d.name,
       'last_seen_at',d.last_seen_at,'connected',d.revoked_at is null and coalesce(d.last_seen_at > now()-interval '45 seconds',false),
-      'managed_assistants',to_jsonb(d.managed_assistants));
+      'managed_assistants',to_jsonb(d.managed_assistants),'capabilities',to_jsonb(d.capabilities));
   end if;
   if p_action = 'revoke' then
     update public.helper_devices set revoked_at=now() where owner_id=p_owner;
@@ -94,7 +105,7 @@ begin
   if p_action = 'requests' then
     return jsonb_build_object('configured',d.id is not null and d.revoked_at is null,
       'connected',d.revoked_at is null and coalesce(d.report_at>now()-interval '45 seconds',false),
-      'managed_assistants',to_jsonb(coalesce(d.managed_assistants,'{}'::text[])),
+      'managed_assistants',to_jsonb(coalesce(d.managed_assistants,'{}'::text[])),'capabilities',to_jsonb(coalesce(d.capabilities,'{}'::text[])),
       'conversation',(select x from jsonb_array_elements(d.conversation_report) x where x->>'thread_id'=tid::text limit 1),
       'requests',coalesce((select jsonb_agg(x order by x.seq) from
       (select id,seq,thread_id,action,assistant,message_id,status,received_at,finished_at,error
@@ -106,7 +117,8 @@ begin
   mid := (p_args->>'message_id')::uuid;
   kind := p_args->>'action';
   asst := coalesce(p_args->>'assistant','chatgpt');
-  if rid is null or kind not in ('wake','message','stop','activity') or asst not in ('chatgpt','claude') or (kind='message' and mid is null) or (kind='activity' and mid is not null) then raise exception 'HELPER_BAD_REQUEST'; end if;
+  if rid is null or kind not in ('wake','message','stop','activity','transcribe') or asst not in ('chatgpt','claude') or (kind='message' and mid is null) or (kind in ('activity','transcribe') and mid is not null) then raise exception 'HELPER_BAD_REQUEST'; end if;
+  if kind='transcribe' and (not ('local_transcription'=any(d.capabilities)) or coalesce(p_args->>'audio_path','') !~ ('^'||p_owner::text||'/'||rid::text||'\.wav$') or coalesce(p_args->>'audio_sha256','') !~ '^[a-f0-9]{64}$' or coalesce((p_args->>'audio_bytes')::integer,0) not between 44 and 20971520) then raise exception 'HELPER_BAD_REQUEST'; end if;
   select * into r from public.helper_requests where id=rid;
   if found then
     if r.owner_id<>p_owner or r.thread_id<>tid or r.action<>kind or r.message_id is distinct from mid or (mid is not null and r.assistant<>asst) then raise exception 'HELPER_CONFLICT'; end if;
@@ -117,8 +129,10 @@ begin
     if not found then raise exception 'HELPER_NOT_FOUND'; end if;
     if kind<>'stop' and asst=any(m.stopped_for) then raise exception 'HELPER_TASK_STOPPED'; end if;
   end if;
-  insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,prompt,assistant)
-    values(rid,p_owner,d.id,tid,kind,mid,m.body,asst) returning * into r;
+  insert into public.helper_requests(id,owner_id,device_id,thread_id,action,message_id,prompt,assistant,audio_sha256,audio_bytes)
+    values(rid,p_owner,d.id,tid,kind,mid,case when kind='transcribe' then p_args->>'audio_path' else m.body end,asst,
+      case when kind='transcribe' then p_args->>'audio_sha256' end,
+      case when kind='transcribe' then (p_args->>'audio_bytes')::integer end) returning * into r;
   if kind='stop' then
     -- Serialize Stop with delivery/results using the same device row lock. A
     -- card Stop cancels one assistant's answer; a conversation Stop cancels all.
@@ -156,11 +170,16 @@ begin
       select array_agg(distinct x) from jsonb_array_elements_text(p_args->'assistants') x where x in ('chatgpt','claude')
     ),'{}'::text[]) where id=d.id;
   end if;
+  if p_args ? 'capabilities' then
+    update public.helper_devices set capabilities=coalesce((
+      select array_agg(distinct x) from jsonb_array_elements_text(p_args->'capabilities') x where x in ('local_transcription')
+    ),'{}'::text[]) where id=d.id;
+  end if;
   if p_action='receive' then
     -- Reads do not consume requests. Lost responses are redelivered until the
     -- helper has saved the command locally and acknowledged it.
     select coalesce(jsonb_agg(x order by x.seq),'[]'::jsonb) into response from
-      (select q.id,q.seq,q.thread_id,q.action,q.assistant,q.message_id,q.prompt,q.status,q.created_at,t.title
+      (select q.id,q.seq,q.thread_id,q.action,q.assistant,q.message_id,q.prompt,q.audio_sha256,q.audio_bytes,q.status,q.created_at,t.title
        from public.helper_requests q join public.threads t on t.id=q.thread_id
        where q.device_id=d.id and q.owner_id=d.owner_id and t.owner_id=d.owner_id
        and not t.archived and (not t.paused or q.action in ('stop','pause','activity')) and q.received_at is null and q.status='pending'
@@ -181,6 +200,11 @@ begin
     return jsonb_build_object('id',r.id,'status',r.status);
   end if;
   wanted := p_args->>'status';
+  -- Local transcription can take minutes. Its durable result atomically
+  -- acknowledges the request so a helper restart simply receives it again.
+  if p_action='result' and r.action='transcribe' and r.received_at is null then
+    update public.helper_requests set received_at=now(),status='received' where id=r.id returning * into r;
+  end if;
   if wanted not in ('completed','stopped','failed','attention') or r.received_at is null then raise exception 'HELPER_BAD_REQUEST'; end if;
   if r.status in ('completed','stopped','failed','attention') then
     return jsonb_build_object('id',r.id,'status',r.status,'duplicate',true);

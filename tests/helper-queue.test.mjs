@@ -285,3 +285,20 @@ test("helper rejects incorrect acknowledgements and scopes removed conversations
   assert.equal(store.snapshot().conversations[keyFor(ownerId,otherThread)].mode,"ready");
   assert.throws(()=>new RemoteConnection(worker,{...config,url:"http://example.com"}),/HTTPS/);
 });
+
+test("local transcription is capability-gated and its result acknowledges atomically",async(t)=>{
+  const f=await database(t);
+  const requestId=randomUUID();
+  const payload={id:requestId,thread_id:f.threads[0],action:"transcribe",audio_path:`${f.owners[0]}/${requestId}.wav`,audio_sha256:"a".repeat(64),audio_bytes:32044};
+  assert.equal((await f.http("/api/helper/requests","POST",payload)).status,400);
+  assert.equal((await f.device("receive",{capabilities:["other"]})).status,400);
+  assert.equal((await f.device("receive",{capabilities:["local_transcription"]})).status,200);
+  assert.deepEqual((await f.http("/api/helper","GET")).data.capabilities,["local_transcription"]);
+  const queued=await f.http("/api/helper/requests","POST",payload);assert.equal(queued.status,202);
+  const event=(await f.device("receive")).data.requests.find((item)=>item.id===requestId);
+  assert.equal(event.action,"transcribe");assert.equal(event.audio_sha256,"a".repeat(64));assert.equal(event.audio_bytes,32044);
+  const completed=await f.device("result",{id:requestId,status:"completed",result:"Private local transcript"});
+  assert.equal(completed.status,200);assert.equal(completed.data.status,"completed");
+  const row=(await f.pg.query("select received_at,status,result from helper_requests where id=$1",[requestId])).rows[0];
+  assert.ok(row.received_at);assert.equal(row.status,"completed");assert.equal(row.result,"Private local transcript");
+});

@@ -30,7 +30,7 @@ function Show-Result([string]$message,[bool]$failed=$false){
   }
 }
 try {
-  $required=@('background.cjs','helper.cjs','pair.cjs','run-background.ps1','install.ps1','setup-functions.ps1','launch.vbs')
+  $required=@('background.cjs','helper.cjs','pair.cjs','run-background.ps1','install.ps1','setup-functions.ps1','launch.vbs','THIRD_PARTY_NOTICES.txt')
   if(-not $SelfTest){New-Item -ItemType Directory -Force -Path $root | Out-Null}
   foreach($name in $required){if(-not (Test-Path -LiteralPath (Join-Path $packageRoot $name))){throw "Installer package is missing $name. Download the installer again from Duo Board Settings."}}
   . (Join-Path $packageRoot 'setup-functions.ps1')
@@ -48,7 +48,7 @@ try {
     } catch {$progressWindow=$null}
   }
   if((Test-Path -LiteralPath $logFile) -and (Get-Item -LiteralPath $logFile).Length -gt 256KB){Move-Item -LiteralPath $logFile -Destination (Join-Path $root 'setup.previous.log') -Force}
-  Write-SetupLog 'Setup 0.2.1 started.'
+  Write-SetupLog 'Setup 0.3.0 started.'
   $stage='Checking the connection'
   if(-not $Repair){try {$pairing=(Get-Clipboard -Raw).Trim()}catch {$pairing=$null}}
   if($pairing -notmatch '^duo_pair_[A-Za-z0-9_-]{43}$'){$pairing=$null}
@@ -65,6 +65,8 @@ try {
   if(-not $claude){foreach($candidate in @((Join-Path $env:APPDATA 'npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe'),(Join-Path $env:USERPROFILE '.local\bin\claude.exe'))){if(Test-Path -LiteralPath $candidate){$claude=$candidate;break}}}
   $existing=Get-ScheduledTask -TaskName 'Duo Board Helper' -ErrorAction SilentlyContinue
   if($existing -and $existing.Description -notin @("Duo Board Windows companion: $state","Duo Board background helper: $state")){throw 'An unrelated Windows task already uses the Duo Board Helper name.'}
+  $stage='Installing private voice transcription'; Write-SetupLog $stage
+  Install-Whisper $application
   $stage='Closing the previous helper'; Write-SetupLog $stage
   Stop-ExistingHelper $state $application
   if($existing){Stop-ScheduledTask -TaskName 'Duo Board Helper' -ErrorAction Stop}
@@ -102,7 +104,7 @@ try {
   if($health -eq 'offline'){throw 'Automatic startup is working, but Duo Board is currently unreachable. Check your internet connection. The helper will retry automatically; use Repair Duo Board Helper from Start to check again.'}
   Write-SetupLog 'Verified: startup task, helper processes and board connection are healthy.'
   $models=if($claude){'ChatGPT and Claude'}else{'ChatGPT'}
-  Show-Result "Duo Board Helper is connected and running for $models. Automatic startup is verified.`n`nIf it stops working, open Repair Duo Board Helper from the Windows Start menu. No commands are needed."
+  Show-Result "Duo Board Helper is connected and running for $models. Private voice transcription and automatic startup are verified.`n`nIf it stops working, open Repair Duo Board Helper from the Windows Start menu. No commands are needed."
 } catch {
   $message=$_.Exception.Message -replace 'duo_(pair|helper)_[A-Za-z0-9_-]+','[redacted]'
   Write-SetupLog ("FAILED at ${stage}: "+$message)

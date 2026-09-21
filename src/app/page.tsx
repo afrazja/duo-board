@@ -138,7 +138,7 @@ export default function BoardPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const followingLatest = useRef(true);
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
-  const dictation = useAudioDictation(appendToDraft);
+  const dictation = useAudioDictation(appendToDraft, activeId);
   const stopDictation = dictation.cancel;
 
   const acceptMessages = useCallback((threadId: string, incoming: BoardMessage[]) => {

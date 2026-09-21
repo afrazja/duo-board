@@ -10,8 +10,8 @@ const assistant = z.enum(ASSISTANTS);
 export const remoteConfigSchema = z.object({ url: z.string().url(), ownerId: uuid, deviceId: uuid, token: z.string().regex(/^duo_helper_[A-Za-z0-9_-]{43}$/) }).strict();
 const timestamp = z.iso.datetime({ offset: true });
 // `assistant` and `title` arrive from a board that knows about Claude sessions; an older board omits them.
-const eventSchema = z.object({ id: uuid, seq: z.union([z.number(), z.string()]), thread_id: uuid, action: z.enum(["wake", "message", "stop", "pause", "activity"]), message_id: uuid.nullable(), prompt: z.string().min(1).max(100_000).nullable(), status: z.literal("pending"), created_at: timestamp, assistant: assistant.optional(), title: z.string().max(200).nullable().optional() }).strict()
-  .refine((e) => (e.action === "stop" || !e.message_id || Boolean(e.prompt)) && (e.action !== "message" || Boolean(e.message_id)) && (!["pause", "activity"].includes(e.action) || !e.message_id));
+const eventSchema = z.object({ id: uuid, seq: z.union([z.number(), z.string()]), thread_id: uuid, action: z.enum(["wake", "message", "stop", "pause", "activity", "transcribe"]), message_id: uuid.nullable(), prompt: z.string().min(1).max(100_000).nullable(), status: z.literal("pending"), created_at: timestamp, assistant: assistant.optional(), title: z.string().max(200).nullable().optional(), audio_url: z.string().url().optional(), audio_sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(), audio_bytes: z.number().int().min(44).max(20 * 1024 * 1024).nullable().optional() }).strict()
+  .refine((e) => (e.action === "stop" || !e.message_id || Boolean(e.prompt)) && (e.action !== "message" || Boolean(e.message_id)) && (!["pause", "activity", "transcribe"].includes(e.action) || !e.message_id) && (e.action !== "transcribe" || Boolean(e.audio_url && e.audio_sha256 && e.audio_bytes)));
 const responseSchema = z.object({ device_id: uuid, owner_id: uuid, requests: z.array(eventSchema).max(50), server_now: timestamp, removed_thread_ids: z.array(uuid).max(200).optional() }).strict();
 const ackSchema = z.object({ id: uuid, status: z.enum(["received", "stop_requested", "cancelled", "completed", "stopped", "failed", "attention"]) }).strict();
 const resultSchema = z.object({ id: uuid, status: z.enum(["completed", "stopped", "failed", "attention"]), duplicate: z.boolean() }).strict();
@@ -24,7 +24,7 @@ class RemoteError extends Error { constructor(message, permanent = false) { supe
 
 /** Outbound HTTPS only. No remote request can link a task, choose a workspace, or pick a session ID. */
 export class RemoteConnection {
-  constructor(worker, config, { fetchImpl = fetch, retryMs = 1000, maxRetryMs = 30_000, idleMs = 50, requestTimeoutMs = 22_000 } = {}) {
+  constructor(worker, config, { fetchImpl = fetch, retryMs = 1000, maxRetryMs = 30_000, idleMs = 50, requestTimeoutMs = 22_000, transcriber = null } = {}) {
     this.worker = worker;
     this.config = remoteConfigSchema.parse(config);
     const url = new URL(this.config.url);
@@ -33,9 +33,13 @@ export class RemoteConnection {
     Object.assign(this, { fetchImpl, retryMs, maxRetryMs, idleMs, requestTimeoutMs });
     this.closed = false;
     this.activeRequest = null;
+    this.transcriber = transcriber;
+    this.transcriptionReady = false;
+    this.transcriptions = new Map();
   }
   async start() {
     this.worker.setDispatchAllowed(false);
+    this.transcriptionReady = Boolean(this.transcriber && await this.transcriber.ready());
     await this.worker.store.change((s) => {
       if (s.remote && (s.remote.ownerId !== this.config.ownerId || s.remote.deviceId !== this.config.deviceId || s.remote.origin !== this.origin)) throw new Error("This state directory is paired with another board or account");
       s.remote ??= { ownerId: this.config.ownerId, deviceId: this.config.deviceId, origin: this.origin, instanceId: randomUUID(), events: {} };
@@ -59,7 +63,7 @@ export class RemoteConnection {
       const res = await this.fetchImpl(`${this.origin}/api/agent/helper`, {
         method: "POST", redirect: "error", signal: controller.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.config.token}` },
-        body: JSON.stringify({ action, instance_id: this.instanceId, conversations: this.report(), assistants: this.worker.managed, ...(action === "receive" ? { workspace_cleanup: true } : {}), ...payload }),
+        body: JSON.stringify({ action, instance_id: this.instanceId, conversations: this.report(), assistants: this.worker.managed, capabilities: this.transcriptionReady ? ["local_transcription"] : [], ...(action === "receive" ? { workspace_cleanup: true } : {}), ...payload }),
       });
       if ([401, 403, 409].includes(res.status)) throw new RemoteError("Helper access was revoked, replaced, or belongs to another instance. Reconnect it from your account.", true);
       if (res.status === 404) throw Object.assign(new RemoteError("This helper request or conversation was removed", action === "receive"), { missing: action !== "receive" });
@@ -131,6 +135,7 @@ export class RemoteConnection {
     const ckey = keyFor(this.config.ownerId, event.thread_id);
     const route = { ownerId: this.config.ownerId, conversationId: event.thread_id };
     if (this.worker.store.state.conversations[ckey]?.removedAt) return;
+    if (event.action === "transcribe") { this.startTranscription(event); return; }
     // A persisted move may need recovery after a restart. Leave this event
     // unacknowledged until its verified local folder is ready again.
     if (this.worker.store.state.conversations[ckey]?.workspaceRename) return;
@@ -170,6 +175,21 @@ export class RemoteConnection {
       await this.worker.handle({ id: commandId(event.id, "cancel"), type: event.message_id ? "cancel" : "stop", ...(event.message_id ? {requestId:event.message_id, assistant: lane} : {}), ...route });
     }
   }
+  startTranscription(event) {
+    if (this.worker.store.snapshot().remote.events[event.id] || this.transcriptions.has(event.id)) return;
+    if (!this.transcriptionReady) return;
+    const controller = new AbortController();
+    const task = (async () => {
+      try {
+        const result = await this.transcriber.transcribe({ id: event.id, audioUrl: event.audio_url, audioBytes: event.audio_bytes, audioSha256: event.audio_sha256, signal: controller.signal });
+        await this.worker.store.change((s) => { s.remote.events[event.id] = { threadId: event.thread_id, jobKey: null, action: "transcribe", status: "completed", result, error: null, waitingFor: [], reported: false }; });
+      } catch {
+        if (controller.signal.aborted) return;
+        await this.worker.store.change((s) => { s.remote.events[event.id] = { threadId: event.thread_id, jobKey: null, action: "transcribe", status: "failed", result: null, error: "Local Whisper could not transcribe this recording. Run Repair Duo Board Helper, then try again.", waitingFor: [], reported: false }; });
+      } finally { this.transcriptions.delete(event.id); }
+    })();
+    this.transcriptions.set(event.id, { controller, task });
+  }
   async flush() {
     const s = this.worker.store.snapshot();
     for (const [id, event] of Object.entries(s.remote.events)) {
@@ -179,7 +199,7 @@ export class RemoteConnection {
       if ((event.jobKey && !job) || event.waitingFor?.some((key) => !s.jobs[key])) throw new RemoteError("Saved delivery refers to missing local work; review the helper state", true);
       if (job && !terminal.has(job.status)) continue;
       if (event.waitingFor?.some((key) => s.jobs[key] && !terminal.has(s.jobs[key].status))) continue;
-      try { await this.request("result", { id, status: job?.status ?? (event.action === "stop" ? "stopped" : "completed"), result: job?.result ?? null, error: job?.error ? "The local task needs attention. Check the helper on your computer." : null }); }
+      try { await this.request("result", { id, status: job?.status ?? event.status ?? (event.action === "stop" ? "stopped" : "completed"), result: job?.result ?? event.result ?? null, error: event.error ?? (job?.error ? "The local task needs attention. Check the helper on your computer." : null) }); }
       catch (error) {
         // Holding one conversation's answer must not block other conversations
         // or prevent the next receive from picking up Resume and Stop.
@@ -256,7 +276,9 @@ export class RemoteConnection {
           await this.worker.store.change((s) => { s.remote.status = "connected"; s.remote.error = null; });
           failures = 0;
           this.worker.setDispatchAllowed(true);
-          await this.delay(this.idleMs);
+          // A transcription stays unacknowledged until its durable result is
+          // ready. Keep servicing the board without hot-looping its signed URL.
+          await this.delay(this.transcriptions.size ? 5_000 : this.idleMs);
         } catch (error) {
           this.worker.setDispatchAllowed(false);
           if (this.closed) break;
@@ -274,8 +296,10 @@ export class RemoteConnection {
     this.closed = true; this.worker.setDispatchAllowed(false);
     clearInterval(this.namingTimer);
     this.activeRequest?.abort(); clearTimeout(this.delayTimer); this.wakeDelay?.();
+    for (const item of this.transcriptions.values()) item.controller.abort();
     await this.done;
     await this.naming;
+    await Promise.allSettled([...this.transcriptions.values()].map((item) => item.task));
   }
 }
 

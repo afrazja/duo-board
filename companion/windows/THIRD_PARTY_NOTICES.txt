@@ -1,0 +1,9 @@
+Duo Board Helper includes whisper.cpp, licensed under the MIT License.
+Copyright (c) 2023-2026 The ggml authors.
+Source: https://github.com/ggml-org/whisper.cpp
+
+The installer downloads the multilingual Whisper base-q5_1 model published by
+the whisper.cpp project at https://huggingface.co/ggerganov/whisper.cpp.
+
+The full whisper.cpp MIT license is available at:
+https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE
