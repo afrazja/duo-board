@@ -236,6 +236,7 @@ export default function BoardPage() {
     return () => {
       stopped = true;
       clearInterval(t);
+      stopDictation();
     };
   }, [activeId, acceptMessages, loadThreads, stopDictation, router]);
 
@@ -611,7 +612,7 @@ export default function BoardPage() {
               className={`field-sizing-content block max-h-32 min-h-12 w-full resize-none rounded-xl border bg-zinc-950 py-2.5 pl-3 pr-32 text-[15px] leading-6 outline-none focus:border-indigo-500 lg:max-h-40 lg:min-h-20 lg:resize-y lg:pr-[21rem] ${dictation.listening ? "border-rose-600" : "border-zinc-700"}`}
             />
             <div role="group" aria-label="Message actions" className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
-              {dictation.supported && <button type="button" onClick={dictation.toggle} disabled={dictation.starting || dictation.transcribing} aria-pressed={dictation.listening} aria-label={dictation.starting ? "Starting microphone" : dictation.listening ? "Stop and transcribe recording" : dictation.transcribing ? "Transcribing recording" : "Record voice message"} title="Record audio, then convert it to text" className={`flex min-h-9 items-center gap-2 rounded-lg border px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:opacity-50 lg:px-3 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
+              {dictation.supported && <button type="button" onClick={dictation.toggle} disabled={!activeId || dictation.starting || dictation.transcribing} aria-pressed={dictation.listening} aria-label={dictation.starting ? "Starting microphone" : dictation.listening ? "Stop and transcribe recording" : dictation.transcribing ? "Transcribing recording" : "Record voice message"} title="Record audio, then convert it to text" className={`flex min-h-9 items-center gap-2 rounded-lg border px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:opacity-50 lg:px-3 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
                 <MicIcon /><span className="hidden lg:inline">{dictation.starting ? "Starting…" : dictation.listening ? "Stop recording" : dictation.transcribing ? "Transcribing…" : "Record"}</span>
               </button>}
               <span className="mx-2 hidden text-[12px] text-zinc-500 lg:inline">Ctrl+Enter to send</span>
