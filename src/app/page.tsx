@@ -210,6 +210,15 @@ function MicIcon({ className }: { className?: string }) {
   );
 }
 
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="m22 2-7 20-4-9-9-4Z" />
+      <path d="M22 2 11 13" />
+    </svg>
+  );
+}
+
 export default function BoardPage() {
   const router = useRouter();
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -542,17 +551,21 @@ export default function BoardPage() {
   }
 
   const active = threads.find((t) => t.id === activeId);
+  const connectionStates: Record<HelperAssistant, ConnectionState> = {
+    claude: connectionState("claude", helper.view, helper.error, assistants.find((item) => item.name === "claude"), Boolean(active?.paused), now),
+    chatgpt: connectionState("chatgpt", helper.view, helper.error, assistants.find((item) => item.name === "chatgpt"), Boolean(active?.paused), now),
+  };
 
   return (
     <div className="flex h-dvh overflow-hidden">
       {removeTarget && <RemoveConversation key={removeTarget.id} conversation={removeTarget} onClose={() => setRemoveTarget(null)} onRemoved={conversationRemoved} />}
-      {navOpen && <button type="button" aria-label="Close conversations" onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/60 md:hidden" />}
+      {navOpen && <button type="button" aria-label="Close conversations" onClick={() => setNavOpen(false)} className="fixed inset-0 z-10 bg-black/60 lg:hidden" />}
       <aside
-        className={`fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 transition-transform md:static md:z-auto md:translate-x-0 md:bg-zinc-900/60 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
+        className={`fixed inset-y-0 left-0 z-20 flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900 transition-transform lg:static lg:z-auto lg:translate-x-0 lg:bg-zinc-900/60 ${navOpen ? "translate-x-0" : "-translate-x-full"}`}
       >
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
           <span className="text-[15px] font-semibold">Duo Board</span>
-          <button type="button" onClick={() => setNavOpen(false)} className="text-zinc-500 hover:text-zinc-200 md:hidden" aria-label="Close">
+          <button type="button" onClick={() => setNavOpen(false)} className="text-zinc-500 hover:text-zinc-200 lg:hidden" aria-label="Close">
             ✕
           </button>
         </div>
@@ -613,37 +626,44 @@ export default function BoardPage() {
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header aria-label="This conversation" className="flex shrink-0 flex-wrap items-center gap-3 border-b border-zinc-800 bg-zinc-900/50 px-3 py-3 md:px-5">
-          <button type="button" onClick={() => setNavOpen(true)} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-zinc-300 md:hidden" aria-label="Open conversations">☰</button>
+        <header aria-label="This conversation" className="relative z-20 flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/50 px-2 py-2 sm:px-3 lg:gap-3 lg:px-5 lg:py-3">
+          <button type="button" onClick={() => setNavOpen(true)} className="min-h-9 rounded-lg border border-zinc-700 px-2.5 text-zinc-300 lg:hidden" aria-label="Open conversations">☰</button>
           <div className="min-w-24 flex-1">
             {renaming && active ? <form onSubmit={renameConversation} className="flex max-w-xl items-center gap-2">
               <input autoFocus value={renameTitle} onChange={(e) => setRenameTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Escape") { setRenaming(false); setRenameError(""); } }} maxLength={120} aria-label="Conversation name" className="min-h-10 min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-[14px] outline-none focus:border-indigo-500" />
-              <button type="submit" disabled={!renameTitle.trim() || savingTitle} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50">{savingTitle ? "Saving…" : "Save"}</button>
-              <button type="button" disabled={savingTitle} onClick={() => { setRenaming(false); setRenameError(""); }} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Cancel</button>
+              <button type="submit" aria-label="Save conversation name" disabled={!renameTitle.trim() || savingTitle} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50"><span className="sm:hidden">✓</span><span className="hidden sm:inline">{savingTitle ? "Saving…" : "Save"}</span></button>
+              <button type="button" aria-label="Cancel renaming" disabled={savingTitle} onClick={() => { setRenaming(false); setRenameError(""); }} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"><span className="sm:hidden">✕</span><span className="hidden sm:inline">Cancel</span></button>
             </form> : <h1 className="truncate text-[16px] font-semibold">{active?.title ?? "…"}</h1>}
-            <p className="mt-1 text-[12px] text-zinc-400"><span className={active?.paused ? "text-amber-300" : "text-emerald-300"}>{active?.paused ? "Paused" : "Active"}</span> · {active?.blind_first_round === false ? "Live" : "Separate"}</p>
+            <p className="mt-1 hidden text-[12px] text-zinc-400 lg:block"><span className={active?.paused ? "text-amber-300" : "text-emerald-300"}>{active?.paused ? "Paused" : "Active"}</span> · {active?.blind_first_round === false ? "Live" : "Separate"}</p>
           </div>
-          <div role="group" aria-label="Conversation controls" className="ml-auto flex items-center gap-2">
+          <div role="group" aria-label="Conversation controls" className="ml-auto hidden items-center gap-2 lg:flex">
             <button type="button" disabled={!active || renaming} onClick={() => { if (active) { setRenameTitle(active.title); setRenameError(""); setRenaming(true); } }} className="min-h-10 rounded-lg border border-zinc-700 px-3 py-2 text-[13px] font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50">Rename</button>
             <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} aria-label={active?.paused ? "Resume conversation" : "Pause conversation"} className={`min-h-10 rounded-lg border px-3 py-2 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50 ${active?.paused ? "border-amber-400 bg-amber-400 text-zinc-950 hover:bg-amber-300" : "border-zinc-700 text-zinc-300 hover:bg-zinc-800"}`}>
               {savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}
             </button>
             <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-10 rounded-lg border border-rose-500/60 px-3 py-2 text-[13px] font-medium text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:opacity-40">Remove</button>
           </div>
+          <ControlPopover label="Conversation actions" trigger="⋯" closeOnAction buttonClass="min-h-9 min-w-10 px-2 text-lg lg:hidden" panelClass="space-y-2">
+            <div role="group" aria-label="Conversation actions" className="space-y-2">
+              <button type="button" disabled={!active || renaming} onClick={() => { if (active) { setRenameTitle(active.title); setRenameError(""); setRenaming(true); } }} className="min-h-11 w-full rounded-lg border border-zinc-700 px-3 text-left text-[14px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-50">Rename</button>
+              <button type="button" disabled={!activeId || savingPause} onClick={() => void changePaused(!active?.paused)} className="min-h-11 w-full rounded-lg border border-zinc-700 px-3 text-left text-[14px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-50">{savingPause ? "Saving…" : active?.paused ? "Resume conversation" : "Pause conversation"}</button>
+              <button type="button" disabled={!active} onClick={() => active && setRemoveTarget({ id: active.id, title: active.title })} className="min-h-11 w-full rounded-lg border border-rose-500/60 px-3 text-left text-[14px] text-rose-300 hover:bg-rose-500/10 disabled:opacity-40">Remove</button>
+            </div>
+          </ControlPopover>
           {error && <p role="alert" className="w-full text-[12px] text-rose-300">{error}</p>}
           {renameError && <p role="alert" className="w-full text-[12px] text-rose-300">{renameError}</p>}
           {pauseError && <p role="alert" className="w-full text-[12px] text-rose-300">{pauseError} Try again.</p>}
         </header>
 
-        {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-[13px] leading-5 text-amber-200">Conversation paused. Messages wait here until you resume.</div>}
+        {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1.5 text-[12px] leading-5 text-amber-200 lg:px-4 lg:py-2 lg:text-[13px]">Conversation paused. Messages wait here until you resume.</div>}
 
         <div className="relative min-h-0 flex-1">
-          <div ref={scroller} onScroll={trackReadingPosition} aria-label="Conversation messages" className="h-full overflow-y-auto px-3 py-4 md:px-5">
+          <div ref={scroller} onScroll={trackReadingPosition} aria-label="Conversation messages" className="h-full overflow-y-auto px-2 py-3 sm:px-3 lg:px-5 lg:py-4">
             {rows.length === 0 && <p className="py-16 text-center text-[15px] text-zinc-400">Start a conversation below. Choose who you want to answer.</p>}
             {rows.map((row) => (
-              <section key={row.key} className="mb-7">
+              <section key={row.key} className="mb-4 lg:mb-7">
                 {row.user && (
-                  <div className="mb-3 rounded-xl border border-zinc-800 bg-zinc-900/70 p-4">
+                  <div className="mb-3 rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 sm:p-4">
                     <div className="mb-2 flex items-center justify-between gap-2 text-[12px] text-zinc-400">
                       <span className="flex items-center gap-2"><span className="font-semibold text-indigo-300">You</span><AudienceBadge to={row.user.addressed_to} /></span>
                       <span>{clock(row.user.created_at)}</span>
@@ -658,28 +678,37 @@ export default function BoardPage() {
           {awayFromLatest && <button type="button" onClick={jumpToLatest} className="absolute bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-indigo-400/60 bg-indigo-950 px-4 py-2 text-[13px] font-medium text-indigo-100 shadow-lg focus-visible:outline-2 focus-visible:outline-indigo-400">{newRepliesBelow ? "New replies · Jump to latest ↓" : "Jump to latest ↓"}</button>}
         </div>
 
-        <form aria-label="Write a message" onSubmit={send} className="shrink-0 border-t border-zinc-700 bg-zinc-900/50 p-3 md:p-4">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <div role="group" aria-label="Message audience" className="flex items-center gap-2">
-              <span className="text-[12px] font-medium text-zinc-400">To</span>
-              <div className="flex rounded-lg border border-zinc-700 bg-zinc-950 p-0.5">
+        <form aria-label="Write a message" onSubmit={send} className="shrink-0 border-t border-zinc-700 bg-zinc-900/50 p-2 sm:p-3 lg:p-4">
+          <div className="mb-1.5 flex items-center gap-2 overflow-x-auto">
+            <div role="group" aria-label="Message audience" className="flex shrink-0 items-center gap-2">
+              <span className="hidden text-[12px] font-medium text-zinc-400 sm:inline">To</span>
+              <select value={audience} onChange={(event) => setAudience(event.target.value as Audience)} aria-label="Message audience" className="min-h-9 rounded-lg border border-zinc-700 bg-zinc-950 px-2 text-[13px] text-zinc-200 outline-none focus:border-indigo-500 sm:hidden">
+                <option value="both">Both</option>
+                <option value="claude">Claude</option>
+                <option value="chatgpt">ChatGPT</option>
+                <option value="none">Note</option>
+              </select>
+              <div className="hidden rounded-lg border border-zinc-700 bg-zinc-950 p-0.5 sm:flex">
                 {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => {
                   const assistant = a === "claude" || a === "chatgpt" ? a : null;
-                  const state = assistant ? connectionState(assistant, helper.view, helper.error, assistants.find((item) => item.name === assistant), Boolean(active?.paused), now) : null;
+                  const state = assistant ? connectionStates[assistant] : null;
                   return <button key={a} type="button" aria-label={assistant && state ? `${NAME[assistant]}, ${state}` : undefined} aria-pressed={audience === a} onClick={() => setAudience(a)} className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 sm:px-3 ${audience === a ? "bg-indigo-500/20 font-medium text-indigo-200 ring-1 ring-indigo-500/50" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"}`}>
                     {assistant && state && <ConnectionDot assistant={assistant} state={state} />}
                     {a === "both" ? "Both" : a === "none" ? "Note" : NAME[a]}
                   </button>;
                 })}
               </div>
+              <div className="flex items-center gap-2 px-1 sm:hidden" aria-label="Assistant status">
+                {(["claude", "chatgpt"] as HelperAssistant[]).map((assistant) => <span key={assistant} role="status" aria-label={`${NAME[assistant]}, ${connectionStates[assistant]}`}><ConnectionDot assistant={assistant} state={connectionStates[assistant]} /></span>)}
+              </div>
             </div>
-            <div role="group" aria-label="Answer delivery" className="ml-auto flex items-center gap-2">
-              <label htmlFor="answer-mode" className="text-[12px] font-medium text-zinc-400">Answers</label>
-              <select id="answer-mode" aria-label="Answer mode" title="Saved for new questions in this conversation. Existing questions keep their original mode." value={active?.blind_first_round === false ? "live" : "separate"} disabled={!activeId || savingAnswerMode || sending} onChange={(e) => void changeAnswerMode(e.target.value === "separate")} className="min-h-10 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-2 text-[13px] text-zinc-200 focus-visible:outline-indigo-400 disabled:opacity-50">
+            <div role="group" aria-label="Answer delivery" className="ml-auto flex shrink-0 items-center gap-2">
+              <label htmlFor="answer-mode" className="hidden text-[12px] font-medium text-zinc-400 lg:block">Answers</label>
+              <select id="answer-mode" aria-label="Answer mode" title="Saved for new questions in this conversation. Existing questions keep their original mode." value={active?.blind_first_round === false ? "live" : "separate"} disabled={!activeId || savingAnswerMode || sending} onChange={(e) => void changeAnswerMode(e.target.value === "separate")} className="min-h-9 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1 text-[13px] text-zinc-200 focus-visible:outline-indigo-400 disabled:opacity-50">
                 <option value="live">Live</option>
                 <option value="separate">Separate</option>
               </select>
-              <ControlPopover label="Answer mode help" trigger="?" above>
+              <ControlPopover label="Answer mode help" trigger="?" above buttonClass="min-h-9 px-2.5">
                 <h2 className="mb-2 text-[14px] font-semibold">How answers arrive</h2>
                 <p className="text-[13px] leading-6 text-zinc-300"><strong>Live:</strong> show answers as they arrive. Assistants can see earlier replies.</p>
                 <p className="mt-2 text-[13px] leading-6 text-zinc-300"><strong>Separate:</strong> for questions to Both, each answers before seeing the other’s reply; reveal both together.</p>
@@ -687,26 +716,24 @@ export default function BoardPage() {
               </ControlPopover>
             </div>
           </div>
-          {savingAnswerMode && <p role="status" className="mb-2 text-[12px] text-zinc-400">Saving answer mode…</p>}
-          {answerModeError && <p role="alert" className="mb-2 text-[12px] text-rose-300">{answerModeError} Check the selected mode or try again.</p>}
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }}
-            rows={2}
-            placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write a message…"}
-            aria-label="Message"
-            className={`mb-2 block max-h-40 min-h-20 w-full resize-y rounded-xl border bg-zinc-950 px-3 py-2 text-[15px] leading-6 outline-none focus:border-indigo-500 ${dictation.listening ? "border-rose-600" : "border-zinc-700"}`}
-          />
-          {dictation.interim && <p className="mb-2 text-[14px] italic text-zinc-400">{dictation.interim}…</p>}
-          {dictation.problem && <p role="alert" className="mb-2 text-[12px] text-rose-300">{dictation.problem}</p>}
-          <div className="flex items-center justify-between gap-2">
-            <div role="group" aria-label="Dictation" className="flex items-center gap-2">
+          {savingAnswerMode && <p role="status" className="mb-1 text-[12px] text-zinc-400">Saving answer mode…</p>}
+          {answerModeError && <p role="alert" className="mb-1 text-[12px] text-rose-300">{answerModeError} Check the selected mode or try again.</p>}
+          <div className="relative">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void send(); }}
+              rows={1}
+              placeholder={dictation.listening ? "Listening… speak, or keep typing" : "Write a message…"}
+              aria-label="Message"
+              className={`field-sizing-content block max-h-32 min-h-12 w-full resize-none rounded-xl border bg-zinc-950 py-2.5 pl-3 pr-32 text-[15px] leading-6 outline-none focus:border-indigo-500 lg:max-h-40 lg:min-h-20 lg:resize-y lg:pr-[21rem] ${dictation.listening ? "border-rose-600" : "border-zinc-700"}`}
+            />
+            <div role="group" aria-label="Message actions" className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
               {dictation.supported && <>
-                <button type="button" onClick={dictation.toggle} aria-pressed={dictation.listening} aria-label={dictation.listening ? "Stop dictation" : "Dictate"} className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
-                  <MicIcon /><span>{dictation.listening ? "Stop dictation" : "Dictate"}</span>
+                <button type="button" onClick={dictation.toggle} aria-pressed={dictation.listening} aria-label={dictation.listening ? "Stop dictation" : "Dictate"} className={`flex min-h-9 items-center gap-2 rounded-lg border px-2 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 lg:px-3 ${dictation.listening ? "border-rose-500 bg-rose-600/20 text-rose-300" : "border-zinc-700 text-zinc-300 hover:border-zinc-500"}`}>
+                  <MicIcon /><span className="hidden lg:inline">{dictation.listening ? "Stop dictation" : "Dictate"}</span>
                 </button>
-                <ControlPopover label="Dictation settings" trigger="⌄" above>
+                <ControlPopover label="Dictation settings" trigger="⌄" above buttonClass="min-h-9 px-2.5">
                   <label className="block text-[13px] font-medium text-zinc-200">Dictation language
                     <select value={dictation.lang} onChange={(e) => dictation.setLang(e.target.value)} disabled={dictation.listening} aria-label="Dictation language" className="mt-2 min-h-10 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 text-[13px] text-zinc-200 disabled:opacity-50">
                       {LANGS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
@@ -714,14 +741,14 @@ export default function BoardPage() {
                   </label>
                 </ControlPopover>
               </>}
-            </div>
-            <div className="ml-auto flex items-center gap-3">
-              <span className="hidden text-[12px] text-zinc-500 sm:inline">Ctrl+Enter to send</span>
-              <button type="submit" disabled={sending || savingAnswerMode || !draft.trim()} className="min-h-11 rounded-lg bg-indigo-500 px-5 py-2 text-[14px] font-semibold text-white hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 disabled:opacity-40">
-                {sending ? "Sending…" : active?.paused ? "Queue message" : "Send"}
+              <span className="mx-2 hidden text-[12px] text-zinc-500 lg:inline">Ctrl+Enter to send</span>
+              <button type="submit" aria-label={sending ? "Sending message" : active?.paused ? "Queue message" : "Send message"} disabled={sending || savingAnswerMode || !draft.trim()} className="flex min-h-9 min-w-9 items-center justify-center rounded-lg bg-indigo-500 px-2 text-[14px] font-semibold text-white hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-300 disabled:opacity-40 lg:px-5">
+                <span className="lg:hidden"><SendIcon /></span><span className="hidden lg:inline">{sending ? "Sending…" : active?.paused ? "Queue message" : "Send"}</span>
               </button>
             </div>
           </div>
+          {dictation.interim && <p className="mt-1 text-[14px] italic text-zinc-400">{dictation.interim}…</p>}
+          {dictation.problem && <p role="alert" className="mt-1 text-[12px] text-rose-300">{dictation.problem}</p>}
         </form>
       </main>
     </div>

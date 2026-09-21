@@ -22,7 +22,7 @@ function ReplyBubble({ message, askedAt, compact }: { message: BoardMessage; ask
   const summary = message.spoken_summary?.trim();
   const excerpt = summary || openingExcerpt(message.body);
   const collapsible = compact && (Boolean(summary) || message.body.trim().split(/\s+/).length > 110);
-  return <article aria-label={`${NAMES[message.author]} reply`} className="min-w-0 rounded-xl border border-zinc-800 p-4">
+  return <article aria-label={`${NAMES[message.author]} reply`} className="min-w-0 rounded-xl border border-zinc-800 p-3 sm:p-4">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-[12px] text-zinc-500">
       <span className="flex flex-wrap items-center gap-2">
         <span className={`font-semibold ${TONES[message.author]}`}>{NAMES[message.author]}</span>
@@ -60,7 +60,7 @@ function Waiting({ who, question, status, now, ready = false, ended = false, pau
   const old = ended || Boolean(question && now - Date.parse(question.created_at) >= 2 * 60 * 60 * 1000);
   const stopped = Boolean(question?.stopped_for?.includes(who));
   const pendingHelper = ["queued","working","offline","sleeping","paused","unlinked"].includes(requestState??"");
-  return <div className="rounded-xl border border-dashed border-zinc-700/80 bg-zinc-900/30 p-4 text-[13px] leading-6 text-zinc-400">
+  return <div className="rounded-xl border border-dashed border-zinc-700/80 bg-zinc-900/30 p-3 text-[13px] leading-6 text-zinc-400 sm:p-4">
     <div className="flex items-center justify-between gap-3">
       <p className={`font-medium ${TONES[who]}`}>{NAMES[who]} · {paused ? "Paused" : stopping || requestState==="stopping" ? "Stopping…" : stopped ? "Stopped" : ready ? "Answer ready" : requestState ? labels[requestState] : old ? "No answer received" : working ? "Working on an answer" : "Waiting for an answer"}</p>
       {managed && !paused && !stopped && !ready && (!old || pendingHelper) && onStop && <button type="button" disabled={stopping||requestState==="stopping"} onClick={onStop} aria-label={`Stop ${NAMES[who]} task`} className="min-h-9 shrink-0 rounded-lg border border-rose-500/60 px-3 text-[12px] font-medium text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-400 disabled:cursor-wait disabled:opacity-50">{stopping||requestState==="stopping" ? "Stopping…" : "Stop"}</button>}
@@ -96,11 +96,11 @@ export function RoundReplies({ row, state, assistants, now, comparing, compareEr
     </div>}
     {revealed && compare && <section aria-label="Answer comparison" className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4">
       <div className="mb-3"><h3 className="text-[14px] font-semibold text-indigo-200">Compare the two takes</h3><p className="mt-1 text-[12px] leading-5 text-zinc-400">What each agrees with, challenges, and changes after reading the other. One follow-up each.</p></div>
-      <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => <div className="min-w-0 space-y-3" key={who}>
+      <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => <div className="min-w-0 space-y-3" key={who}>
         {compare[who].length ? <ReplyList messages={compare[who]} who={who} askedAt={compare.request.created_at} compact={false} /> : <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={compare.request} now={now} paused={paused} stopping={stopping.includes(`${who}:${compare.request.id}`)} onStop={onStop ? () => onStop(compare.request, who) : undefined} status={assistants.find((a) => a.name === who)} />}
       </div>)}</div>
     </section>}
-    <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => {
+    <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 lg:gap-4">{(["claude", "chatgpt"] as const).map((who) => {
       const question = row.user;
       const expected = question && (question.addressed_to === "both" || question.addressed_to === who);
       return <div key={who} className="min-w-0 space-y-3">

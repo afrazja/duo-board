@@ -4,8 +4,8 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { createPortal } from "react-dom";
 
 /** A labelled disclosure for secondary controls; Escape and outside click close it. */
-export function ControlPopover({ label, children, buttonClass = "", panelClass = "", trigger, above = false }: {
-  label: string; children: ReactNode; buttonClass?: string; panelClass?: string; trigger?: ReactNode; above?: boolean;
+export function ControlPopover({ label, children, buttonClass = "", panelClass = "", trigger, above = false, closeOnAction = false }: {
+  label: string; children: ReactNode; buttonClass?: string; panelClass?: string; trigger?: ReactNode; above?: boolean; closeOnAction?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties>({});
@@ -18,6 +18,10 @@ export function ControlPopover({ label, children, buttonClass = "", panelClass =
     const place = () => {
       const rect = button.current?.getBoundingClientRect();
       if (!rect) return;
+      if (window.innerWidth < 640) {
+        setPosition({ width: window.innerWidth - 16, left: 8, top: undefined, bottom: 8, maxHeight: window.innerHeight - 16 });
+        return;
+      }
       const width = Math.min(320, window.innerWidth - 32);
       setPosition({ width, left: Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16)),
         top: above ? undefined : rect.bottom + 8, bottom: above ? window.innerHeight - rect.top + 8 : undefined,
@@ -41,6 +45,6 @@ export function ControlPopover({ label, children, buttonClass = "", panelClass =
   }, [open]);
   return <div ref={root} className="relative shrink-0">
     <button ref={button} type="button" aria-label={label} aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)} className={`min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:border-zinc-500 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 ${buttonClass}`}>{trigger ?? label}</button>
-    {open && createPortal(<div ref={panel} id={id} role="region" aria-label={label} style={position} className={`fixed z-50 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-2xl ${panelClass}`}>{children}</div>, document.body)}
+    {open && createPortal(<div ref={panel} id={id} role="region" aria-label={label} style={position} onClick={(event) => { if (closeOnAction && (event.target as HTMLElement).closest("button")) setOpen(false); }} className={`fixed z-50 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-2xl ${panelClass}`}>{children}</div>, document.body)}
   </div>;
 }
