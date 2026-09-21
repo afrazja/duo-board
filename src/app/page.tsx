@@ -9,8 +9,8 @@ import { RoundReplies } from "@/components/round-replies";
 import { ControlPopover } from "@/components/control-popover";
 import { RemoveConversation } from "@/components/remove-conversation";
 import { AccountMenu } from "@/components/account-menu";
-import { HelperControls, useHelper } from "@/components/helper-controls";
-import { helperManages } from "@/lib/helper-view";
+import { useHelper } from "@/components/helper-controls";
+import { helperManages, type HelperAssistant, type HelperView } from "@/lib/helper-view";
 import { groupRows, mergeMessages, roundState, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
@@ -20,6 +20,35 @@ import { groupRows, mergeMessages, roundState, type BoardMessage } from "@/compo
 
 const POLL_MS = 3000;
 const NAME: Record<string, string> = { user: "You", claude: "Claude", chatgpt: "ChatGPT" };
+
+type ConnectionState = "connected" | "sleeping" | "disconnected";
+const CONNECTION_DOT: Record<ConnectionState, string> = {
+  connected: "bg-emerald-400 shadow-[0_0_0_2px_rgba(52,211,153,0.15)]",
+  sleeping: "bg-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.15)]",
+  disconnected: "bg-rose-500 shadow-[0_0_0_2px_rgba(244,63,94,0.15)]",
+};
+
+function connectionState(
+  assistant: HelperAssistant,
+  helper: HelperView | null,
+  helperError: string,
+  status: AssistantStatus | undefined,
+  paused: boolean,
+  now: number,
+): ConnectionState {
+  if (helperManages(helper, assistant)) {
+    if (helperError || !helper?.connected || !helper.conversation || helper.conversation.mode === "attention") return "disconnected";
+    if (paused || helper.conversation.mode === "sleeping" || helper.conversation.mode === "paused") return "sleeping";
+    return "connected";
+  }
+  const checked = status?.last_checked_at ? Date.parse(status.last_checked_at) : NaN;
+  return Number.isFinite(checked) && now - checked < 15_000 ? "connected" : "disconnected";
+}
+
+function ConnectionDot({ assistant, state }: { assistant: HelperAssistant; state: ConnectionState }) {
+  const label = state[0].toUpperCase() + state.slice(1);
+  return <span aria-hidden title={`${NAME[assistant]}: ${label}`} className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${CONNECTION_DOT[state]}`} />;
+}
 
 function ago(iso: string | null | undefined, now: number): string {
   if (!iso) return "never";
@@ -608,13 +637,6 @@ export default function BoardPage() {
 
         {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-[13px] leading-5 text-amber-200">Conversation paused. Messages wait here until you resume.</div>}
 
-        <div className="grid shrink-0 grid-cols-1 border-b border-zinc-800 text-center text-[12px] font-medium text-zinc-400 lg:grid-cols-2">
-          {helperManages(helper.view, "claude")
-            ? <HelperControls helper={helper} paused={Boolean(active?.paused)} assistant="claude" />
-            : <div className="hidden items-center justify-center py-2 text-orange-300 lg:flex">Claude</div>}
-          <HelperControls helper={helper} paused={Boolean(active?.paused)} assistant="chatgpt" />
-        </div>
-
         <div className="relative min-h-0 flex-1">
           <div ref={scroller} onScroll={trackReadingPosition} aria-label="Conversation messages" className="h-full overflow-y-auto px-3 py-4 md:px-5">
             {rows.length === 0 && <p className="py-16 text-center text-[15px] text-zinc-400">Start a conversation below. Choose who you want to answer.</p>}
@@ -641,11 +663,14 @@ export default function BoardPage() {
             <div role="group" aria-label="Message audience" className="flex items-center gap-2">
               <span className="text-[12px] font-medium text-zinc-400">To</span>
               <div className="flex rounded-lg border border-zinc-700 bg-zinc-950 p-0.5">
-                {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => (
-                  <button key={a} type="button" aria-pressed={audience === a} onClick={() => setAudience(a)} className={`min-h-10 rounded-md px-2.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 sm:px-3 ${audience === a ? "bg-indigo-500/20 font-medium text-indigo-200 ring-1 ring-indigo-500/50" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"}`}>
+                {(["both", "claude", "chatgpt", "none"] as Audience[]).map((a) => {
+                  const assistant = a === "claude" || a === "chatgpt" ? a : null;
+                  const state = assistant ? connectionState(assistant, helper.view, helper.error, assistants.find((item) => item.name === assistant), Boolean(active?.paused), now) : null;
+                  return <button key={a} type="button" aria-label={assistant && state ? `${NAME[assistant]}, ${state}` : undefined} aria-pressed={audience === a} onClick={() => setAudience(a)} className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-[13px] focus-visible:outline-2 focus-visible:outline-indigo-400 sm:px-3 ${audience === a ? "bg-indigo-500/20 font-medium text-indigo-200 ring-1 ring-indigo-500/50" : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"}`}>
+                    {assistant && state && <ConnectionDot assistant={assistant} state={state} />}
                     {a === "both" ? "Both" : a === "none" ? "Note" : NAME[a]}
-                  </button>
-                ))}
+                  </button>;
+                })}
               </div>
             </div>
             <div role="group" aria-label="Answer delivery" className="ml-auto flex items-center gap-2">
