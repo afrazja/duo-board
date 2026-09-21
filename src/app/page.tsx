@@ -408,6 +408,7 @@ export default function BoardPage() {
     const body = draft.trim();
     if (!body || !activeId || sending) return;
     const threadId = activeId;
+    stopDictation();
     setSending(true);
     try {
       const res = await fetch("/api/messages", {
