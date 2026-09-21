@@ -18,7 +18,7 @@
     "test:bridge": "node --test tests/codex-client.test.mjs tests/claude-client.test.mjs tests/bridge-worker.test.mjs tests/claude-worker.test.mjs tests/background.test.mjs tests/workspace-cleanup.test.mjs tests/helper-workspace-removal.test.mjs tests/named-workspaces.test.mjs tests/named-workspace-integration.test.mjs",
     "test:helper-queue": "node --experimental-strip-types --test tests/helper-pairing.test.mjs tests/helper-queue.test.mjs tests/helper-ui.test.mjs tests/helper-cutover.test.mjs tests/helper-removals.test.mjs",
     "bridge:verify-app": "node --experimental-strip-types bridge/verify-app.mjs",
-    "test:voice": "node --experimental-strip-types --test tests/speech-playback.test.mjs",
+    "test:voice": "node --experimental-strip-types --test tests/speech-playback.test.mjs tests/dictation-results.test.mjs",
     "test:rounds": "node --experimental-strip-types --test tests/rounds.test.mjs",
     "test:view": "node --experimental-strip-types --test tests/round-view.test.mjs",
     "test": "npm run test:voice && npm run test:rounds && npm run test:view && npm run test:bridge && npm run test:helper-queue && npm run test:oauth",

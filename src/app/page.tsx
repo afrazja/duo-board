@@ -12,6 +12,7 @@ import { AccountMenu } from "@/components/account-menu";
 import { useHelper } from "@/components/helper-controls";
 import { helperManages, type HelperAssistant, type HelperView } from "@/lib/helper-view";
 import { groupRows, mergeMessages, roundState, type BoardMessage } from "@/components/round-model";
+import { DictationResultTracker, type DictationResultLike } from "@/lib/dictation-results";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -72,7 +73,7 @@ interface Recognition {
   interimResults: boolean;
   start(): void;
   stop(): void;
-  onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onresult: ((e: { resultIndex: number; results: ArrayLike<DictationResultLike> }) => void) | null;
   onerror: ((e: { error: string }) => void) | null;
   onend: (() => void) | null;
 }
@@ -137,11 +138,13 @@ function useDictation(onFinal: (text: string) => void) {
   const lang = useSyncExternalStore(subscribeLang, readLang, () => "");
   const rec = useRef<Recognition | null>(null);
   const wanted = useRef(false);
+  const resultTracker = useRef(new DictationResultTracker());
 
   const stop = useCallback(() => {
     wanted.current = false;
     rec.current?.stop();
     rec.current = null;
+    resultTracker.current.reset();
     setListening(false);
     setInterim("");
   }, []);
@@ -149,18 +152,15 @@ function useDictation(onFinal: (text: string) => void) {
   const start = useCallback(() => {
     const Ctor = speechCtor();
     if (!Ctor) return;
+    resultTracker.current.reset();
     const r = new Ctor();
     r.lang = lang || navigator.language;
     r.continuous = true;
     r.interimResults = true;
     r.onresult = (e) => {
-      let pending = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const res = e.results[i];
-        if (res.isFinal) onFinal(res[0].transcript);
-        else pending += res[0].transcript;
-      }
-      setInterim(pending);
+      const update = resultTracker.current.consume(e.resultIndex, e.results);
+      if (update.final) onFinal(update.final);
+      setInterim(update.interim);
     };
     r.onerror = (e) => {
       // Silence and network hiccups are routine; a denied microphone is not.
