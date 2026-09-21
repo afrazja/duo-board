@@ -48,7 +48,7 @@ try {
     } catch {$progressWindow=$null}
   }
   if((Test-Path -LiteralPath $logFile) -and (Get-Item -LiteralPath $logFile).Length -gt 256KB){Move-Item -LiteralPath $logFile -Destination (Join-Path $root 'setup.previous.log') -Force}
-  Write-SetupLog 'Setup 0.3.0 started.'
+  Write-SetupLog 'Setup 0.3.1 started.'
   $stage='Checking the connection'
   if(-not $Repair){try {$pairing=(Get-Clipboard -Raw).Trim()}catch {$pairing=$null}}
   if($pairing -notmatch '^duo_pair_[A-Za-z0-9_-]{43}$'){$pairing=$null}

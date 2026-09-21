@@ -4,6 +4,20 @@ function Find-DesktopCodex {
     ForEach-Object {Get-Item -LiteralPath (Join-Path $_.FullName 'codex.exe') -ErrorAction SilentlyContinue} |
     Where-Object {-not $_.PSIsContainer} | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
+function Get-FileDigest([string]$path,[string]$algorithm) {
+  $stream=$null
+  $hasher=$null
+  try {
+    $stream=[IO.File]::OpenRead($path)
+    if($algorithm -eq 'SHA1'){$hasher=[Security.Cryptography.SHA1]::Create()}
+    elseif($algorithm -eq 'SHA256'){$hasher=[Security.Cryptography.SHA256]::Create()}
+    else {throw "Unsupported file hash algorithm: $algorithm"}
+    return ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','').ToLowerInvariant()
+  } finally {
+    if($hasher){$hasher.Dispose()}
+    if($stream){$stream.Dispose()}
+  }
+}
 function Install-Whisper([string]$application) {
   $whisper=Join-Path $application 'whisper'
   $executable=Join-Path $whisper 'whisper-cli.exe'
@@ -17,7 +31,7 @@ function Install-Whisper([string]$application) {
   }
   $ready=(Test-Path -LiteralPath $executable -PathType Leaf) -and (Test-Path -LiteralPath $model -PathType Leaf)
   if($ready){
-    $ready=((Get-FileHash -LiteralPath $model -Algorithm SHA1).Hash.ToLowerInvariant() -eq $modelSha1)
+    $ready=((Get-FileDigest $model 'SHA1') -eq $modelSha1)
     if($ready){return}
   }
   New-Item -ItemType Directory -Force -Path $application,$whisper | Out-Null
@@ -25,13 +39,13 @@ function Install-Whisper([string]$application) {
   $archive=$download+'.zip'
   try {
     Invoke-WebRequest -UseBasicParsing -Uri $binaryUrl -OutFile $archive
-    if((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $binarySha256){throw 'The Whisper program download failed its security check. Run setup again.'}
+    if((Get-FileDigest $archive 'SHA256') -ne $binarySha256){throw 'The Whisper program download failed its security check. Run setup again.'}
     Expand-Archive -LiteralPath $archive -DestinationPath $download -Force
     $cli=Get-ChildItem -LiteralPath $download -Filter whisper-cli.exe -File -Recurse | Select-Object -First 1
     if(-not $cli){throw 'The Whisper program download was incomplete. Run setup again.'}
     Get-ChildItem -LiteralPath $cli.Directory.FullName -File | Copy-Item -Destination $whisper -Force
     Invoke-WebRequest -UseBasicParsing -Uri 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin?download=true' -OutFile ($model+'.download')
-    if((Get-FileHash -LiteralPath ($model+'.download') -Algorithm SHA1).Hash.ToLowerInvariant() -ne $modelSha1){throw 'The Whisper language model download failed its security check. Run setup again.'}
+    if((Get-FileDigest ($model+'.download') 'SHA1') -ne $modelSha1){throw 'The Whisper language model download failed its security check. Run setup again.'}
     Move-Item -LiteralPath ($model+'.download') -Destination $model -Force
     if(-not (Test-Path -LiteralPath $executable -PathType Leaf)){throw 'Whisper was not installed. Run setup again.'}
   } finally {
