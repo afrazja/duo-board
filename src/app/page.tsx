@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { AssistantStatus, Audience, ThreadSummary } from "@/lib/board";
-import { useVoicePlayback, VoiceToolbar } from "@/components/voice-playback";
 
 import { Body } from "@/components/message-body";
 import { RoundReplies } from "@/components/round-replies";
@@ -12,7 +11,7 @@ import { RemoveConversation } from "@/components/remove-conversation";
 import { AccountMenu } from "@/components/account-menu";
 import { HelperControls, useHelper } from "@/components/helper-controls";
 import { helperManages } from "@/lib/helper-view";
-import { groupRows, mergeMessages, playableMessages, roundState, type BoardMessage } from "@/components/round-model";
+import { groupRows, mergeMessages, roundState, type BoardMessage } from "@/components/round-model";
 
 // One conversation, two columns. The person's messages span both; each
 // assistant's replies land in its own column, grouped under the message they
@@ -201,7 +200,6 @@ export default function BoardPage() {
   const [navOpen, setNavOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [savingBrief, setSavingBrief] = useState(false);
   const [savingAnswerMode, setSavingAnswerMode] = useState(false);
   const [answerModeError, setAnswerModeError] = useState("");
   const [savingPause, setSavingPause] = useState(false);
@@ -216,7 +214,6 @@ export default function BoardPage() {
   const compareRequests = useRef(new Set<string>());
   const stopRequests = useRef(new Set<string>());
   const loaded = useRef<{ threadId: string | null; messages: BoardMessage[] }>({ threadId: null, messages: [] });
-  const briefSaveVersion = useRef(0);
   const answerModeSaveVersion = useRef(0);
   const pauseSaveVersion = useRef(0);
   const lastSeq = useRef(0);
@@ -225,19 +222,13 @@ export default function BoardPage() {
   const appendToDraft = useCallback((text: string) => setDraft((prev) => joinText(prev, text)), []);
   const dictation = useDictation(appendToDraft);
   const stopDictation = dictation.stop;
-  const briefAudio = threads.find((thread) => thread.id === activeId)?.brief_audio ?? false;
-  const playback = useVoicePlayback(activeId, dictation.listening, briefAudio);
-  const speechPlayer = playback.player;
 
-  const acceptMessages = useCallback((threadId: string, incoming: BoardMessage[], serverNow?: string) => {
+  const acceptMessages = useCallback((threadId: string, incoming: BoardMessage[]) => {
     if (loaded.current.threadId !== threadId) return;
     const next = mergeMessages(loaded.current.messages, incoming);
     loaded.current.messages = next;
-    // Unrevealed text never enters the audio queue. Previously held answers
-    // become eligible together when the second assistant's answer arrives.
-    speechPlayer.ingest(playableMessages(groupRows(next), serverNow ? Date.parse(serverNow) : Date.now()), serverNow);
     setMessages(next);
-  }, [speechPlayer]);
+  }, []);
 
   const loadThreads = useCallback(async () => {
     try {
@@ -281,7 +272,6 @@ export default function BoardPage() {
       if (polling) return;
       polling = true;
       try {
-        const versionAtPoll = briefSaveVersion.current;
         const answerVersionAtPoll = answerModeSaveVersion.current;
         const pauseVersionAtPoll = pauseSaveVersion.current;
         const res = await fetch(`/api/messages?thread=${activeId}&after=${lastSeq.current}`);
@@ -295,7 +285,6 @@ export default function BoardPage() {
           stopped = true;
           removedIds.current.add(activeId);
           loaded.current = { threadId: null, messages: [] };
-          speechPlayer.stop();
           stopDictation();
           setMessages([]);
           setDraft("");
@@ -310,12 +299,8 @@ export default function BoardPage() {
         }
         setError("");
         if (data.assistants) setAssistants(data.assistants);
-        if (typeof data.brief_audio === "boolean" && versionAtPoll % 2 === 0 && versionAtPoll === briefSaveVersion.current) {
-          speechPlayer.setBrief(data.brief_audio);
-          setThreads((prev) => prev.map((thread) => thread.id === activeId && thread.brief_audio !== data.brief_audio ? { ...thread, brief_audio: data.brief_audio! } : thread));
-        }
         if (data.messages && data.messages.length) {
-          acceptMessages(activeId, data.messages, data.now);
+          acceptMessages(activeId, data.messages);
           lastSeq.current = Math.max(lastSeq.current, ...data.messages.map((message) => message.seq));
         }
         if (typeof data.blind_first_round === "boolean" && answerVersionAtPoll % 2 === 0 && answerVersionAtPoll === answerModeSaveVersion.current) {
@@ -334,7 +319,7 @@ export default function BoardPage() {
       stopped = true;
       clearInterval(t);
     };
-  }, [activeId, speechPlayer, acceptMessages, loadThreads, stopDictation, router]);
+  }, [activeId, acceptMessages, loadThreads, stopDictation, router]);
 
   // Follow new messages only while the reader is already at the bottom.
   useEffect(() => {
@@ -480,21 +465,6 @@ export default function BoardPage() {
     }
   }
 
-  async function changeBriefAudio(brief: boolean) {
-    if (!activeId || savingBrief) return;
-    const threadId = activeId;
-    briefSaveVersion.current += 1;
-    setSavingBrief(true);
-    try {
-      const res = await fetch("/api/threads", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: threadId, brief_audio: brief }) });
-      const data = await res.json() as { thread?: { id: string; brief_audio: boolean }; error?: string };
-      if (!res.ok || !data.thread) throw new Error(data.error ?? "Could not save Brief audio");
-      setThreads((prev) => prev.map((thread) => thread.id === threadId ? { ...thread, brief_audio: data.thread!.brief_audio } : thread));
-      setError("");
-    } catch (e) { setError((e as Error).message); }
-    finally { briefSaveVersion.current += 1; setSavingBrief(false); }
-  }
-
   const rows = groupRows(messages);
   async function changeAnswerMode(blind: boolean) {
     if (!activeId || answerModeSaveVersion.current % 2 !== 0) return;
@@ -513,7 +483,6 @@ export default function BoardPage() {
 
   function conversationRemoved(id: string) {
     removedIds.current.add(id);
-    speechPlayer.stop();
     stopDictation();
     // Reject any in-flight response for the removed conversation immediately.
     loaded.current = { threadId: null, messages: [] };
@@ -623,7 +592,7 @@ export default function BoardPage() {
               <button type="submit" disabled={!renameTitle.trim() || savingTitle} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-[13px] font-medium text-white hover:bg-indigo-500 disabled:opacity-50">{savingTitle ? "Saving…" : "Save"}</button>
               <button type="button" disabled={savingTitle} onClick={() => { setRenaming(false); setRenameError(""); }} className="min-h-10 rounded-lg border border-zinc-700 px-3 text-[13px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Cancel</button>
             </form> : <h1 className="truncate text-[16px] font-semibold">{active?.title ?? "…"}</h1>}
-            <p className="mt-1 text-[12px] text-zinc-400"><span className={active?.paused ? "text-amber-300" : "text-emerald-300"}>{active?.paused ? "Paused" : "Active"}</span> · {active?.blind_first_round === false ? "Live" : "Separate"}{briefAudio ? " · Brief audio" : ""}</p>
+            <p className="mt-1 text-[12px] text-zinc-400"><span className={active?.paused ? "text-amber-300" : "text-emerald-300"}>{active?.paused ? "Paused" : "Active"}</span> · {active?.blind_first_round === false ? "Live" : "Separate"}</p>
           </div>
           <div role="group" aria-label="Conversation controls" className="ml-auto flex items-center gap-2">
             <button type="button" disabled={!active || renaming} onClick={() => { if (active) { setRenameTitle(active.title); setRenameError(""); setRenaming(true); } }} className="min-h-10 rounded-lg border border-zinc-700 px-3 py-2 text-[13px] font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 disabled:opacity-50">Rename</button>
@@ -638,8 +607,6 @@ export default function BoardPage() {
         </header>
 
         {active?.paused && <div role="status" className="shrink-0 border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-[13px] leading-5 text-amber-200">Conversation paused. Messages wait here until you resume.</div>}
-
-        <VoiceToolbar key={activeId} playback={playback} savingBrief={savingBrief} canSetBrief={Boolean(activeId)} onBriefChange={(brief) => void changeBriefAudio(brief)} />
 
         <div className="grid shrink-0 grid-cols-1 border-b border-zinc-800 text-center text-[12px] font-medium text-zinc-400 lg:grid-cols-2">
           {helperManages(helper.view, "claude")
@@ -662,7 +629,7 @@ export default function BoardPage() {
                     <Body text={row.user.body} />
                   </div>
                 )}
-                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} playback={playback} helper={helper.view} onWake={()=>void helper.wake()} waking={helper.waking} paused={active?.paused} stopping={stoppingTasks} onStop={(question, who) => void stopTask(question, who)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
+                <RoundReplies row={row} state={roundState(row, rows, now)} assistants={assistants} now={now} helper={helper.view} onWake={()=>void helper.wake()} waking={helper.waking} paused={active?.paused} stopping={stoppingTasks} onStop={(question, who) => void stopTask(question, who)} currentBlind={active?.blind_first_round} comparing={comparing.includes(row.key) || savingPause} compareError={compareErrors[row.key]} onCompare={(question) => void compareAnswers(question)} />
               </section>
             ))}
           </div>
