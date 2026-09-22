@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { AssistantStatus } from "@/lib/board";
 import { helperManages, helperRequestState, type HelperView } from "@/lib/helper-view";
 import { Body } from "./message-body";
@@ -49,6 +49,45 @@ function ReplyList({ messages, who, askedAt, compact }: { messages: BoardMessage
   </>;
 }
 
+/**
+ * The assistants' answers as one full-width card each, in a horizontal track
+ * rather than two half-width columns: the first assistant is the first card,
+ * the second assistant the card beside it. Scroll-snap does the swiping; the
+ * name buttons and the arrow keys move between cards. A single card has
+ * nothing to slide between, so it is rendered on its own without the chrome.
+ */
+function ReplySlider({ slides, label }: { slides: { who: "claude" | "chatgpt"; content: ReactNode }[]; label: string }) {
+  const track = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(0);
+  if (slides.length < 2) return <div className="min-w-0 space-y-3">{slides[0]?.content}</div>;
+
+  const show = (index: number) => {
+    const el = track.current;
+    const next = Math.max(0, Math.min(slides.length - 1, index));
+    setActive(next);
+    el?.scrollTo({ left: next * el.clientWidth, behavior: "smooth" });
+  };
+  const arrows = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    show(active + (event.key === "ArrowRight" ? 1 : -1));
+  };
+
+  return <div className="min-w-0">
+    <div className="mb-2 flex items-center gap-2">
+      {slides.map((slide, index) => <button key={slide.who} type="button" onClick={() => show(index)} aria-label={`Show ${NAMES[slide.who]}'s answer`} aria-current={index === active}
+        className={`min-h-9 rounded-lg border px-3 text-[13px] font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 ${index === active ? `border-zinc-600 bg-zinc-800/70 ${TONES[slide.who]}` : "border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300"}`}>{NAMES[slide.who]}</button>)}
+      <span aria-hidden className="ml-auto text-[12px] tabular-nums text-zinc-500">{active + 1} / {slides.length}</span>
+    </div>
+    <div ref={track} tabIndex={0} role="group" aria-roledescription="carousel" aria-label={label} onKeyDown={arrows}
+      onScroll={(event) => { const el = event.currentTarget; if (el.clientWidth) setActive(Math.round(el.scrollLeft / el.clientWidth)); }}
+      className="flex snap-x snap-mandatory overflow-x-auto overscroll-x-contain rounded-xl [scrollbar-width:none] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-400 [&::-webkit-scrollbar]:hidden">
+      {slides.map((slide, index) => <div key={slide.who} role="group" aria-roledescription="slide" aria-label={`${index + 1} of ${slides.length}: ${NAMES[slide.who]}`}
+        className="w-full shrink-0 snap-start space-y-3">{slide.content}</div>)}
+    </div>
+  </div>;
+}
+
 function Waiting({ who, question, status, now, ready = false, ended = false, paused = false, stopping = false, onStop, helper, onWake, waking }: { who: "claude" | "chatgpt"; question?: BoardMessage; status?: AssistantStatus; now: number; ready?: boolean; ended?: boolean; paused?: boolean; stopping?: boolean; onStop?: () => void; helper?:HelperView|null; onWake?:()=>void; waking?:boolean }) {
   // The helper answers for ChatGPT once paired, and for Claude when Claude Code runs beside it.
   const managed = helperManages(helper, who);
@@ -96,17 +135,27 @@ export function RoundReplies({ row, state, assistants, now, comparing, compareEr
     </div>}
     {revealed && compare && <section aria-label="Answer comparison" className="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-4">
       <div className="mb-3"><h3 className="text-[14px] font-semibold text-indigo-200">Compare the two takes</h3><p className="mt-1 text-[12px] leading-5 text-zinc-400">What each agrees with, challenges, and changes after reading the other. One follow-up each.</p></div>
-      <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">{(["claude", "chatgpt"] as const).map((who) => <div className="min-w-0 space-y-3" key={who}>
-        {compare[who].length ? <ReplyList messages={compare[who]} who={who} askedAt={compare.request.created_at} compact={false} /> : <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={compare.request} now={now} paused={paused} stopping={stopping.includes(`${who}:${compare.request.id}`)} onStop={onStop ? () => onStop(compare.request, who) : undefined} status={assistants.find((a) => a.name === who)} />}
-      </div>)}</div>
+      <ReplySlider label="Comparison answers" slides={(["claude", "chatgpt"] as const).map((who) => ({
+        who,
+        content: compare[who].length
+          ? <ReplyList messages={compare[who]} who={who} askedAt={compare.request.created_at} compact={false} />
+          : <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={compare.request} now={now} paused={paused} stopping={stopping.includes(`${who}:${compare.request.id}`)} onStop={onStop ? () => onStop(compare.request, who) : undefined} status={assistants.find((a) => a.name === who)} />,
+      }))} />
     </section>}
-    <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 lg:gap-4">{(["claude", "chatgpt"] as const).map((who) => {
+    <ReplySlider label="Assistant answers" slides={(["claude", "chatgpt"] as const).flatMap((who) => {
       const question = row.user;
-      const expected = question && (question.addressed_to === "both" || question.addressed_to === who);
-      return <div key={who} className="min-w-0 space-y-3">
-        {revealed && <ReplyList messages={row[who]} who={who} askedAt={row.user?.created_at} compact={blind} />}
-        {expected && (!revealed || (blind ? !hasFirstAnswer(row, who) : !row[who].length)) && <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={question} now={now} paused={paused} stopping={stopping.includes(`${who}:${question.id}`)} onStop={onStop ? () => onStop(question, who) : undefined} ended={blind && !live && revealed && !state.paired} ready={!revealed && hasFirstAnswer(row, who)} status={assistants.find((a) => a.name === who)} />}
-      </div>;
-    })}</div>
+      const expected = Boolean(question && (question.addressed_to === "both" || question.addressed_to === who));
+      const waiting = expected && (!revealed || (blind ? !hasFirstAnswer(row, who) : !row[who].length));
+      // An assistant the person never addressed, with nothing to show, is not
+      // a card: an empty slide would be a blank swipe with nothing in it.
+      if (!waiting && !(revealed && row[who].length)) return [];
+      return [{
+        who,
+        content: <>
+          {revealed && <ReplyList messages={row[who]} who={who} askedAt={row.user?.created_at} compact={blind} />}
+          {waiting && question && <Waiting helper={helper} onWake={onWake} waking={waking} who={who} question={question} now={now} paused={paused} stopping={stopping.includes(`${who}:${question.id}`)} onStop={onStop ? () => onStop(question, who) : undefined} ended={blind && !live && revealed && !state.paired} ready={!revealed && hasFirstAnswer(row, who)} status={assistants.find((a) => a.name === who)} />}
+        </>,
+      }];
+    })} />
   </div>;
 }
