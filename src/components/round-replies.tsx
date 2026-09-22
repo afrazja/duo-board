@@ -50,6 +50,17 @@ function ReplyList({ messages, who, askedAt, compact }: { messages: BoardMessage
 }
 
 /**
+ * Move the track to a card. The scroll is deliberately not smooth: a smooth
+ * scrollTo is silently a no-op in some Chromium builds (an embedded WebView
+ * among them), which would leave the counter and the highlighted name saying
+ * one card while another is still on screen. Landing on the card matters more
+ * than gliding to it, and scroll-snap already makes the jump feel deliberate.
+ */
+function slideTo(track: HTMLDivElement | null, index: number) {
+  if (track) track.scrollLeft = index * track.clientWidth;
+}
+
+/**
  * The assistants' answers as one full-width card each, in a horizontal track
  * rather than two half-width columns: the first assistant is the first card,
  * the second assistant the card beside it. Scroll-snap does the swiping; the
@@ -59,13 +70,22 @@ function ReplyList({ messages, who, askedAt, compact }: { messages: BoardMessage
 function ReplySlider({ slides, label }: { slides: { who: "claude" | "chatgpt"; content: ReactNode }[]; label: string }) {
   const track = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
+  // After a move, read the card back off the track rather than trusting that
+  // the move landed: assigning scrollLeft fires no scroll event at all in some
+  // embedded browsers, so onScroll alone cannot keep the counter honest. A
+  // timeout rather than an animation frame, so the read still happens while
+  // the tab is in the background.
+  const syncActive = () => setTimeout(() => {
+    const el = track.current;
+    if (el?.clientWidth) setActive(Math.round(el.scrollLeft / el.clientWidth));
+  }, 0);
   if (slides.length < 2) return <div className="min-w-0 space-y-3">{slides[0]?.content}</div>;
 
   const show = (index: number) => {
-    const el = track.current;
     const next = Math.max(0, Math.min(slides.length - 1, index));
     setActive(next);
-    el?.scrollTo({ left: next * el.clientWidth, behavior: "smooth" });
+    slideTo(track.current, next);
+    syncActive();
   };
   const arrows = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
